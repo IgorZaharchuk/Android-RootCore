@@ -1,0 +1,38 @@
+name: Build Android RootCore
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build RootCore AAR
+        run: |
+          chmod +x gradlew
+          ./gradlew :root-core:assembleRelease
+
+      - name: Upload AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-rootcore-aar
+          path: root-core/build/outputs/aar/root-core-release.aar
+          if-no-files-found: error
