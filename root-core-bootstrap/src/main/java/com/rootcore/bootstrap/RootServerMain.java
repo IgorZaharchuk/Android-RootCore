@@ -1,4 +1,4 @@
-package com.routinebridge.rootcore.bootstrap;
+package com.rootcore.bootstrap;
 
 import android.content.Context;
 import android.os.Looper;
@@ -42,7 +42,7 @@ public final class RootServerMain {
 
             ClassLoader loader = packageContext.getClassLoader();
             Class<?> serverClass = loader.loadClass(
-                    "com.routinebridge.rootcore.internal.RootCoreServer"
+                    "com.rootcore.internal.RootCoreServer"
             );
 
             Object server = serverClass
@@ -63,7 +63,7 @@ public final class RootServerMain {
 
             Looper.loop();
         } catch (Throwable error) {
-            android.util.Log.e("RoutineBridgeRootCore", "Root server bootstrap failed", error);
+            android.util.Log.e("RootCore", "Root server bootstrap failed", error);
             System.exit(70);
         }
     }

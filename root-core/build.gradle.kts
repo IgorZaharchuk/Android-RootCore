@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.routinebridge.rootcore"
+    namespace = "com.rootcore"
     compileSdk = 35
 
     defaultConfig {

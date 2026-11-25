@@ -1,4 +1,4 @@
-package com.routinebridge.rootcore;
+package com.rootcore;
 
 import android.content.ComponentName;
 import android.content.Intent;

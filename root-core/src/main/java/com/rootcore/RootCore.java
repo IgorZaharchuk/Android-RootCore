@@ -1,4 +1,4 @@
-package com.routinebridge.rootcore;
+package com.rootcore;
 
 import android.content.Context;
 import android.os.Looper;

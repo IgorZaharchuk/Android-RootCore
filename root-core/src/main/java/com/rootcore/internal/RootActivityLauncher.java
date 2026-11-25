@@ -1,11 +1,11 @@
-package com.routinebridge.rootcore.internal;
+package com.rootcore.internal;
 
 import android.content.ComponentName;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.RemoteException;
 
-import com.routinebridge.rootcore.RootCorePolicy;
+import com.rootcore.RootCorePolicy;
 
 import java.util.ArrayList;
 import java.io.ByteArrayOutputStream;
@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 
 final class RootActivityLauncher {
-    private static final String TAG = "RoutineBridgeRootCore";
+    private static final String TAG = "RootCore";
 
     private RootActivityLauncher() {}
 
@@ -127,7 +127,7 @@ final class RootActivityLauncher {
                         outputReadError.set(error);
                     }
                 }
-            }, "RoutineBridge-am-output");
+            }, "RootCore-am-output");
             outputReader.setDaemon(true);
             outputReader.start();
 

@@ -1,4 +1,4 @@
-package com.routinebridge.rootcore.internal;
+package com.rootcore.internal;
 
 import android.content.Context;
 import android.content.Intent;
@@ -11,13 +11,13 @@ import android.os.Process;
 import android.os.RemoteException;
 import android.os.UserHandle;
 
-import com.routinebridge.rootcore.RootCorePolicy;
-import com.routinebridge.rootcore.ipc.IRootCoreManager;
+import com.rootcore.RootCorePolicy;
+import com.rootcore.ipc.IRootCoreManager;
 
 
 public final class RootCoreServer extends IRootCoreManager.Stub {
 
-    private static final String TAG = "RoutineBridgeRootCore";
+    private static final String TAG = "RootCore";
     private static final long IDLE_TIMEOUT_MS = 15_000L;
 
     private final Context context;

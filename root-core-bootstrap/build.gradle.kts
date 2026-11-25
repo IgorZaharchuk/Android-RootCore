@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace = "com.routinebridge.rootcore.bootstrap"
+    namespace = "com.rootcore.bootstrap"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.routinebridge.rootcore.bootstrap"
+        applicationId = "com.rootcore.bootstrap"
         minSdk = 29
         targetSdk = 35
     }

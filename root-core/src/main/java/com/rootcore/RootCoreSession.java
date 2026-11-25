@@ -1,4 +1,4 @@
-package com.routinebridge.rootcore;
+package com.rootcore;
 
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -16,7 +16,7 @@ import android.os.Looper;
 import android.os.Process;
 import android.os.RemoteException;
 
-import com.routinebridge.rootcore.ipc.IRootCoreManager;
+import com.rootcore.ipc.IRootCoreManager;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -109,14 +109,14 @@ public final class RootCoreSession implements AutoCloseable {
             @Override
             public void onReceive(Context ignored, Intent intent) {
                 android.util.Log.i(
-                        "RoutineBridgeRootCore",
+                        "RootCore",
                         "ROOTCORE_BROADCAST_RECEIVED session=" + sessionId.substring(0, 8)
                                 + " thread=" + Thread.currentThread().getName()
                 );
 
                 if (!action.equals(intent.getAction())) {
                     android.util.Log.w(
-                            "RoutineBridgeRootCore",
+                            "RootCore",
                             "Ignoring Binder broadcast with unexpected action"
                     );
                     return;
@@ -126,14 +126,14 @@ public final class RootCoreSession implements AutoCloseable {
                     int senderUid = getSentFromUid();
                     if (senderUid != 0 && senderUid != Process.INVALID_UID) {
                         android.util.Log.w(
-                                "RoutineBridgeRootCore",
+                                "RootCore",
                                 "Ignoring Binder broadcast from UID " + senderUid
                         );
                         return;
                     }
                     if (senderUid == Process.INVALID_UID) {
                         android.util.Log.w(
-                                "RoutineBridgeRootCore",
+                                "RootCore",
                                 "Sender UID unavailable; verifying Binder identity"
                         );
                     }
@@ -141,7 +141,7 @@ public final class RootCoreSession implements AutoCloseable {
 
                 if (!sessionId.equals(intent.getStringExtra("extra.session_id"))) {
                     android.util.Log.w(
-                            "RoutineBridgeRootCore",
+                            "RootCore",
                             "Ignoring Binder broadcast for another session"
                     );
                     return;
@@ -169,7 +169,7 @@ public final class RootCoreSession implements AutoCloseable {
                     manager.connect(token);
 
                     android.util.Log.i(
-                            "RoutineBridgeRootCore",
+                            "RootCore",
                             "ROOTCORE_BROADCAST_ACCEPTED session="
                                     + sessionId.substring(0, 8)
                     );
@@ -204,7 +204,7 @@ public final class RootCoreSession implements AutoCloseable {
                     connected.countDown();
 
                     android.util.Log.e(
-                            "RoutineBridgeRootCore",
+                            "RootCore",
                             "Failed to accept Root Core Binder broadcast",
                             broadcastError
                     );
@@ -230,7 +230,7 @@ public final class RootCoreSession implements AutoCloseable {
             String command =
                     "CLASSPATH=" + shellQuote(jar.getAbsolutePath()) +
                     " app_process /system/bin " +
-                    "com.routinebridge.rootcore.bootstrap.RootServerMain " +
+                    "com.rootcore.bootstrap.RootServerMain " +
                     shellQuote(packageName) + " " +
                     uid + " " + userId + " " +
                     shellQuote(sessionId) + " " +

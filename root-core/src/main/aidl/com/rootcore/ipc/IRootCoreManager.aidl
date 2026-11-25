@@ -1,4 +1,4 @@
-package com.routinebridge.rootcore.ipc;
+package com.rootcore.ipc;
 
 import android.content.Intent;
 import android.os.Bundle;

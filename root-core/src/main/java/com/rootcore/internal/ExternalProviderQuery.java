@@ -1,4 +1,4 @@
-package com.routinebridge.rootcore.internal;
+package com.rootcore.internal;
 
 import android.database.Cursor;
 import android.net.Uri;
@@ -7,14 +7,14 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.os.RemoteException;
 
-import com.routinebridge.rootcore.RootCorePolicy;
+import com.rootcore.RootCorePolicy;
 
 import java.util.ArrayList;
 import java.lang.reflect.Method;
 import java.lang.reflect.InvocationTargetException;
 
 final class ExternalProviderQuery {
-    private static final String TAG = "RoutineBridgeRootCore";
+    private static final String TAG = "RootCore";
 
     private ExternalProviderQuery() {}
 
@@ -92,7 +92,7 @@ final class ExternalProviderQuery {
             if (acquireMethod != null) {
                 holder = invokeReflective(
                         acquireMethod, activityManager,
-                        authority, userId, externalToken, "*routinebridge*"
+                        authority, userId, externalToken, "*rootcore*"
                 );
             } else {
                 acquireMethod = findMethod(
