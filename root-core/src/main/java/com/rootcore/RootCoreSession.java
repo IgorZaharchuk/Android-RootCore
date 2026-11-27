@@ -461,9 +461,16 @@ public final class RootCoreSession implements AutoCloseable {
                             + timeoutMs + " ms; session was closed: " + operation
             );
         } catch (InterruptedException error) {
+            future.cancel(true);
+
+            // Binder может игнорировать interruption. Закрываем сессию,
+            // чтобы сервер и root-процесс не остались бесхозными.
+            close();
+
             Thread.currentThread().interrupt();
             throw remoteException(
-                    "Interrupted while waiting for Root Core Binder: " + operation,
+                    "Interrupted while waiting for Root Core Binder; "
+                            + "session was closed: " + operation,
                     error
             );
         } catch (CancellationException error) {
@@ -612,7 +619,7 @@ public final class RootCoreSession implements AutoCloseable {
 
         File config = File.createTempFile("session-", ".cfg", directory);
         try (FileOutputStream output = new FileOutputStream(config)) {
-            byte[] data = (sessionId + "\\n" + encodedPolicy + "\\n")
+            byte[] data = (sessionId + '\n' + encodedPolicy + '\n')
                     .getBytes(java.nio.charset.StandardCharsets.UTF_8);
             output.write(data);
             output.getFD().sync();

@@ -431,7 +431,7 @@ final class ExternalProviderQuery {
             if (column == null
                     || column.length() > MAX_COLUMN_NAME_LENGTH
                     || !(column.matches(
-                            "[A-Za-z_][A-Za-z0-9_]*(\\\\.[A-Za-z_][A-Za-z0-9_]*)?"
+                            "[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?"
                     ) || "*".equals(column))) {
                 throw new IllegalArgumentException(
                         "Provider projection must contain plain column identifiers"

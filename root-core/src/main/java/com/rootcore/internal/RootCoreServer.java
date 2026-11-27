@@ -586,37 +586,54 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                 );
             }
         } catch (Throwable registrationError) {
-            try {
-                entry.requestClose();
-            } catch (Throwable closeError) {
-                registrationError.addSuppressed(closeError);
-            }
+            closeFailedRegistration(entry, registrationError);
             throw registrationError;
         }
 
         List<RegisteredObject> current = operationObjects.get();
         if (current == null) {
             ObjectEntry removed = objects.remove(id);
-            try {
-                (removed == null ? entry : removed).requestClose();
-            } catch (Throwable closeError) {
-                // Preserve the missing transaction context as the cause.
-            }
-            throw new IllegalStateException(
-                    "Object registration outside an active operation"
+            IllegalStateException registrationError =
+                    new IllegalStateException(
+                            "Object registration outside an active operation"
+                    );
+            closeFailedRegistration(
+                    removed == null ? entry : removed,
+                    registrationError
             );
+            throw registrationError;
         }
 
         try {
             current.add(new RegisteredObject(id, entry));
         } catch (Throwable trackingError) {
-            objects.remove(id);
-            try {
-                entry.requestClose();
-            } catch (Throwable closeError) {
-                trackingError.addSuppressed(closeError);
-            }
+            ObjectEntry removed = objects.remove(id);
+            closeFailedRegistration(
+                    removed == null ? entry : removed,
+                    trackingError
+            );
             throw trackingError;
+        }
+    }
+
+    private void closeFailedRegistration(
+            ObjectEntry entry,
+            Throwable originalError
+    ) {
+        try {
+            entry.requestClose();
+        } catch (Throwable closeError) {
+            originalError.addSuppressed(closeError);
+        }
+
+        try {
+            Throwable closeError =
+                    entry.closeAndWait(RELEASE_CLOSE_TIMEOUT_MS);
+            if (closeError != null) {
+                originalError.addSuppressed(closeError);
+            }
+        } catch (Throwable closeError) {
+            originalError.addSuppressed(closeError);
         }
     }
 

@@ -25,12 +25,35 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Build RootCore AAR
+      - name: Build and test Release artifacts
         run: |
           chmod +x gradlew
-          ./gradlew --configuration-cache \
+          ./gradlew \
             :root-core:testReleaseUnitTest \
+            :root-core:assembleRelease \
             :root-core-r8-test:assembleRelease
+
+      - name: Verify minified RootCore bootstrap entry point
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="root-core-r8-test/build/outputs/apk/release/root-core-r8-test-release.apk"
+          test -s "$APK"
+
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+
+          unzip -q "$APK" 'classes*.dex' -d "$TMP"
+
+          find "$TMP" -name 'classes*.dex' -type f -print0 \
+            | xargs -0 -r strings > "$TMP/dex-strings.txt"
+
+          grep -Fq 'Lcom/rootcore/internal/RootCoreServer;' "$TMP/dex-strings.txt"
+          grep -Fxq '<init>' "$TMP/dex-strings.txt"
+          grep -Fxq 'start' "$TMP/dex-strings.txt"
+
+          echo "R8 verification passed: RootCoreServer, constructor and start() are present."
 
       - name: Upload AAR
         uses: actions/upload-artifact@v7

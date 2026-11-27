@@ -28,6 +28,17 @@ public final class ExternalProviderQueryTest {
     }
 
     @Test
+    public void rejectsMalformedQualifiedColumnNames() {
+        assertRejected(new String[] { ".title" });
+        assertRejected(new String[] { "media." });
+        assertRejected(new String[] { "media..title" });
+        assertRejected(new String[] { "media.title.extra" });
+        assertRejected(new String[] { "media title" });
+        assertRejected(new String[] { "media-title" });
+        assertRejected(new String[] { "media.title;DROP" });
+    }
+
+    @Test
     public void rejectsDuplicateColumns() {
         assertRejected(new String[] { "_id", "_id" });
     }
