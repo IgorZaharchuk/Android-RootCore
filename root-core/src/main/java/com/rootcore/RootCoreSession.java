@@ -16,7 +16,10 @@ import android.os.Looper;
 import android.os.Process;
 import android.os.RemoteException;
 
+import com.rootcore.RootCoreRequest;
+import com.rootcore.RootCoreResponse;
 import com.rootcore.ipc.IRootCoreManager;
+import com.rootcore.internal.RootCoreCodec;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -303,6 +306,18 @@ public final class RootCoreSession implements AutoCloseable {
     private static final int BINDER_EXECUTOR_THREADS = 4;
     private static final int BINDER_EXECUTOR_QUEUE_CAPACITY = 64;
     private static final long BINDER_CALL_TIMEOUT_MS = 10_000L;
+
+    public RootCoreResponse execute(RootCoreRequest request)
+            throws RemoteException {
+        if (request == null) throw new IllegalArgumentException("Request is null");
+        Bundle encoded = RootCoreCodec.encodeRequest(request);
+        Bundle raw = callRemote("execute", () -> remote.execute(encoded));
+        RootCoreResponse response = RootCoreCodec.decodeResponse(raw);
+        if (!request.getRequestId().equals(response.getRequestId())) {
+            throw new RemoteException("RootCore response requestId mismatch");
+        }
+        return response;
+    }
 
     public int ping() throws RemoteException {
         return callRemote("ping", () -> remote.ping());
