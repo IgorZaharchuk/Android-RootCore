@@ -25,15 +25,18 @@ import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.UUID;
 
 public final class RootCoreSession implements AutoCloseable {
@@ -46,9 +49,10 @@ public final class RootCoreSession implements AutoCloseable {
     private final IRootCoreManager remote;
     private final IBinder localToken;
     private final IBinder.DeathRecipient deathRecipient;
+    private final AtomicBoolean binderAlive;
 
     private volatile boolean closed;
-    private volatile boolean unusable;
+    private final Object stateLock = new Object();
     private final ExecutorService binderExecutor;
 
     private RootCoreSession(
@@ -59,7 +63,8 @@ public final class RootCoreSession implements AutoCloseable {
             HandlerThread receiverThread,
             IRootCoreManager remote,
             IBinder localToken,
-            IBinder.DeathRecipient deathRecipient
+            IBinder.DeathRecipient deathRecipient,
+            AtomicBoolean binderAlive
     ) {
         this.context = context;
         this.rootProcess = rootProcess;
@@ -69,11 +74,18 @@ public final class RootCoreSession implements AutoCloseable {
         this.remote = remote;
         this.localToken = localToken;
         this.deathRecipient = deathRecipient;
-        this.binderExecutor = Executors.newSingleThreadExecutor(task -> {
-            Thread thread = new Thread(task, "RootCoreSession-" + sessionId);
-            thread.setDaemon(true);
-            return thread;
-        });
+        this.binderAlive = binderAlive;
+        this.binderExecutor = new ThreadPoolExecutor(BINDER_EXECUTOR_THREADS, BINDER_EXECUTOR_THREADS, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(BINDER_EXECUTOR_QUEUE_CAPACITY),
+                task -> {
+                    Thread thread = new Thread(
+                            task,
+                            "RootCoreSession-" + sessionId
+                    );
+                    thread.setDaemon(true);
+                    return thread;
+                },
+                new ThreadPoolExecutor.AbortPolicy()
+        );
     }
 
     static RootCoreSession open(
@@ -98,6 +110,7 @@ public final class RootCoreSession implements AutoCloseable {
         AtomicReference<IBinder> tokenRef = new AtomicReference<>();
         AtomicReference<IBinder.DeathRecipient> deathRef = new AtomicReference<>();
         AtomicReference<Throwable> connectionError = new AtomicReference<>();
+        AtomicBoolean binderAlive = new AtomicBoolean(false);
 
         HandlerThread receiverThread = new HandlerThread(
                 "RootCoreReceiver-" + sessionId
@@ -175,6 +188,7 @@ public final class RootCoreSession implements AutoCloseable {
                     );
 
                     IBinder.DeathRecipient deathRecipient = () -> {
+                        binderAlive.set(false);
                         remoteRef.set(null);
                         connectionError.compareAndSet(
                                 null,
@@ -187,6 +201,7 @@ public final class RootCoreSession implements AutoCloseable {
                     tokenRef.set(token);
                     deathRef.set(deathRecipient);
 
+                    binderAlive.set(true);
                     binder.linkToDeath(deathRecipient, 0);
 
                     if (!binder.isBinderAlive()) {
@@ -197,6 +212,7 @@ public final class RootCoreSession implements AutoCloseable {
 
                     accepted = true;
                 } catch (Throwable broadcastError) {
+                    binderAlive.set(false);
                     remoteRef.set(null);
                     tokenRef.set(null);
                     deathRef.set(null);
@@ -271,7 +287,7 @@ public final class RootCoreSession implements AutoCloseable {
 
             return new RootCoreSession(
                     context, process, sessionId, receiver, receiverThread,
-                    manager, token, death
+                    manager, token, death, binderAlive
             );
         } catch (Throwable error) {
             try {
@@ -284,10 +300,99 @@ public final class RootCoreSession implements AutoCloseable {
         }
     }
 
+    private static final int BINDER_EXECUTOR_THREADS = 4;
+    private static final int BINDER_EXECUTOR_QUEUE_CAPACITY = 64;
     private static final long BINDER_CALL_TIMEOUT_MS = 10_000L;
 
     public int ping() throws RemoteException {
         return callRemote("ping", () -> remote.ping());
+    }
+
+    public String createObject(
+            String className,
+            String[] constructorTypes,
+            Bundle arguments
+    ) throws RemoteException {
+        if (className == null || className.isBlank()) {
+            throw new IllegalArgumentException("Class name is empty");
+        }
+        String objectId = callRemote(
+                "createObject",
+                () -> remote.createObject(
+                        className,
+                        constructorTypes == null ? new String[0] : constructorTypes,
+                        arguments == null ? new Bundle() : arguments
+                )
+        );
+        if (objectId == null || objectId.isBlank()) {
+            throw new RemoteException("Root Core returned an empty object ID");
+        }
+        return objectId;
+    }
+
+    public Bundle invokeObject(
+            String objectId,
+            String methodName,
+            String[] parameterTypes,
+            Bundle arguments
+    ) throws RemoteException {
+        if (objectId == null || objectId.isBlank()
+                || methodName == null || methodName.isBlank()) {
+            throw new IllegalArgumentException("Object ID or method name is empty");
+        }
+        Bundle result = callRemote(
+                "invokeObject",
+                () -> remote.invokeObject(
+                        objectId,
+                        methodName,
+                        parameterTypes == null ? new String[0] : parameterTypes,
+                        arguments == null ? new Bundle() : arguments
+                )
+        );
+        requireSuccessfulObjectOperation(result, "invokeObject");
+        return result;
+    }
+
+    public void releaseObject(String objectId) throws RemoteException {
+        if (objectId == null || objectId.isBlank()) {
+            throw new IllegalArgumentException("Object ID is empty");
+        }
+
+        Bundle result = callRemote(
+                "releaseObject",
+                () -> remote.releaseObject(objectId)
+        );
+        requireSuccessfulObjectOperation(result, "releaseObject");
+    }
+
+    private static void requireSuccessfulObjectOperation(
+            Bundle result,
+            String operation
+    ) throws RemoteException {
+        if (result == null) {
+            throw new RemoteException(
+                    "Root Core returned a null result for " + operation
+            );
+        }
+
+        String status = result.getString("status");
+        if ("error".equals(status)) {
+            String type = result.getString("error_type", "UnknownError");
+            String message = result.getString(
+                    "error_message",
+                    "Root Core operation failed without a message"
+            );
+            throw new RemoteException(
+                    "Root Core " + operation + " failed ["
+                            + type + "]: " + message
+            );
+        }
+
+        if (!"success".equals(status)) {
+            throw new RemoteException(
+                    "Root Core returned an invalid status for " + operation
+            );
+        }
     }
 
     public Bundle queryProvider(Uri uri, String[] projection) throws RemoteException {
@@ -343,28 +448,65 @@ public final class RootCoreSession implements AutoCloseable {
         return callRemote(operation, BINDER_CALL_TIMEOUT_MS, call);
     }
 
-    private synchronized <T> T callRemote(
+    private <T> T callRemote(
             String operation,
             long timeoutMs,
             Callable<T> call
     ) throws RemoteException {
-        ensureOpen();
-
         Future<T> future;
-        try {
-            future = binderExecutor.submit(call);
-        } catch (RejectedExecutionException error) {
-            unusable = true;
-            throw remoteException(
-                    "Root Core executor is unavailable: " + operation,
-                    error
-            );
+        synchronized (stateLock) {
+            ensureOpen();
+            try {
+                future = binderExecutor.submit(() -> {
+                String tag = "RootCore";
+                String prefix = "CLIENT_BINDER_CALL ";
+                android.util.Log.i(
+                        tag,
+                        prefix + "BEGIN operation=" + operation
+                                + " session=" + sessionId.substring(0, 8)
+                                + " thread=" + Thread.currentThread().getName()
+                );
+                try {
+                    T result = call.call();
+                    android.util.Log.i(
+                            tag,
+                            prefix + "RETURN operation=" + operation
+                                    + " session=" + sessionId.substring(0, 8)
+                                    + " resultNull=" + (result == null)
+                    );
+                    return result;
+                } catch (Exception error) {
+                    android.util.Log.e(
+                            tag,
+                            prefix + "THROW operation=" + operation
+                                    + " session=" + sessionId.substring(0, 8)
+                                    + " type=" + error.getClass().getName()
+                                    + " message=" + error.getMessage(),
+                            error
+                    );
+                    throw error;
+                } catch (Error error) {
+                    android.util.Log.e(
+                            tag,
+                            prefix + "ERROR operation=" + operation
+                                    + " session=" + sessionId.substring(0, 8)
+                                    + " type=" + error.getClass().getName(),
+                            error
+                    );
+                    throw error;
+                }
+                });
+            } catch (RejectedExecutionException error) {
+                throw remoteException(
+                        "Root Core executor is full or unavailable: " + operation,
+                        error
+                );
+            }
         }
 
         try {
             return future.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException error) {
-            unusable = true;
             future.cancel(true);
             throw new RemoteException(
                     "Root Core Binder call timed out after "
@@ -376,8 +518,23 @@ public final class RootCoreSession implements AutoCloseable {
                     "Interrupted while waiting for Root Core Binder: " + operation,
                     error
             );
+        } catch (CancellationException error) {
+            throw remoteException(
+                    "Root Core Binder call was cancelled: " + operation,
+                    error
+            );
         } catch (ExecutionException error) {
             Throwable cause = error.getCause();
+            android.util.Log.e(
+                    "RootCore",
+                    "CLIENT_BINDER_EXECUTION_EXCEPTION operation=" + operation
+                            + " session=" + sessionId.substring(0, 8)
+                            + " causeType=" + (cause == null
+                                    ? "null" : cause.getClass().getName())
+                            + " causeMessage=" + (cause == null
+                                    ? "null" : cause.getMessage()),
+                    cause == null ? error : cause
+            );
             if (cause instanceof RemoteException) {
                 throw (RemoteException) cause;
             }
@@ -398,17 +555,14 @@ public final class RootCoreSession implements AutoCloseable {
         if (closed) {
             throw new IllegalStateException("Root Core session is closed");
         }
-        if (unusable) {
-            throw new IllegalStateException(
-                    "Root Core session is unusable after a Binder timeout"
-            );
-        }
     }
 
     @Override
-    public synchronized void close() {
-        if (closed) return;
-        closed = true;
+    public void close() {
+        synchronized (stateLock) {
+            if (closed) return;
+            closed = true;
+        }
 
         // AIDL close() is oneway: send it directly, even after a Binder timeout.
         // Do not queue it behind a possibly blocked synchronous Binder call.
@@ -416,7 +570,11 @@ public final class RootCoreSession implements AutoCloseable {
             remote.close();
         } catch (Throwable ignored) {
         }
-        binderExecutor.shutdownNow();
+        for (Runnable pending : binderExecutor.shutdownNow()) {
+            if (pending instanceof Future<?>) {
+                ((Future<?>) pending).cancel(false);
+            }
+        }
 
         try {
             if (deathRecipient != null) {
@@ -441,6 +599,17 @@ public final class RootCoreSession implements AutoCloseable {
 
     public boolean isRootProcessAlive() {
         return rootProcess.isAlive();
+    }
+
+    /**
+     * Returns whether this session is open and its remote Binder and root process are alive.
+     * This is a local state check; a subsequent Binder call can still fail if the process dies.
+     */
+    public boolean isConnected() {
+        return !closed
+                && binderAlive.get()
+                && remote.asBinder().isBinderAlive()
+                && rootProcess.isAlive();
     }
 
     public String getSessionId() {
