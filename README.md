@@ -40,3 +40,24 @@ The AAR contains the RootCore classes, generated AIDL interface and bootstrap DE
 ## Continuous integration
 
 GitHub Actions builds the release AAR on pushes to `main` and on manual workflow dispatch. The AAR is uploaded as a workflow artifact.
+
+
+## Session lifecycle and security
+
+- Supported Android versions: API 29 and newer.
+- The session timeout includes waiting for root-manager authorization,
+  bootstrap startup and Binder connection. The first root invocation may
+  require a user confirmation in the installed root manager.
+- The Binder peer is authenticated through a reverse callback on all
+  supported API levels. On API 34 and newer, broadcast sender UID is also
+  checked before accepting the Binder.
+- Session ID and policy payload are passed to the root bootstrap through a
+  short-lived file in the application's private files directory, not as
+  `su` command-line arguments. The bootstrap deletes that file after reading.
+- A Binder timeout is terminal for that session. RootCore closes the session,
+  requests server shutdown and starts bounded root-process reaping.
+- Provider projections accept plain column identifiers (optionally qualified
+  by one table prefix) or `*`; SQL expressions and duplicate columns are
+  rejected.
+- CI runs protocol unit tests and builds a minified consumer application to
+  verify the published consumer R8 rules.

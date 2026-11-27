@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Android-RootCore"
-include(":root-core", ":root-core-bootstrap")
+include(":root-core", ":root-core-bootstrap", ":root-core-r8-test")

@@ -1,11 +1,9 @@
 package com.rootcore;
 
 import android.content.BroadcastReceiver;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
@@ -19,6 +17,7 @@ import android.os.RemoteException;
 import com.rootcore.RootCoreRequest;
 import com.rootcore.RootCoreResponse;
 import com.rootcore.ipc.IRootCoreManager;
+import com.rootcore.ipc.IRootCoreClient;
 import com.rootcore.internal.RootCoreCodec;
 
 import java.io.File;
@@ -40,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.UUID;
 
 public final class RootCoreSession implements AutoCloseable {
@@ -107,6 +107,9 @@ public final class RootCoreSession implements AutoCloseable {
         String packageName = context.getPackageName();
         String sessionId = UUID.randomUUID().toString();
         String action = packageName + ".ROOTCORE_BIND." + sessionId;
+        File configFile = createSessionConfig(
+                context, sessionId, encodedPolicy
+        );
 
         CountDownLatch connected = new CountDownLatch(1);
         AtomicReference<IRootCoreManager> remoteRef = new AtomicReference<>();
@@ -171,13 +174,34 @@ public final class RootCoreSession implements AutoCloseable {
                         throw new RemoteException("Root Core Binder interface is unavailable");
                     }
 
+                    remoteRef.set(manager);
+
                     int rootUid = manager.ping();
                     if (rootUid != 0) {
-                        throw new SecurityException("Root Core Binder UID is " + rootUid);
+                        throw new SecurityException(
+                                "Root Core Binder UID is " + rootUid
+                        );
                     }
 
-                    IBinder token = new Binder();
-                    manager.connect(token);
+                    AtomicInteger verifiedRootUid = new AtomicInteger(-1);
+                    IRootCoreClient verifier = new IRootCoreClient.Stub() {
+                        @Override
+                        public int verifyRootPeer() {
+                            int callingUid = Binder.getCallingUid();
+                            verifiedRootUid.set(callingUid);
+                            return callingUid;
+                        }
+                    };
+
+                    IBinder token = verifier.asBinder();
+                    tokenRef.set(token);
+                    manager.connect(verifier);
+
+                    if (verifiedRootUid.get() != 0) {
+                        throw new SecurityException(
+                                "Root Core callback was not authenticated as UID 0"
+                        );
+                    }
 
                     android.util.Log.i(
                             "RootCore",
@@ -247,8 +271,8 @@ public final class RootCoreSession implements AutoCloseable {
                     "com.rootcore.bootstrap.RootServerMain " +
                     shellQuote(packageName) + " " +
                     uid + " " + userId + " " +
-                    shellQuote(sessionId) + " " +
-                    shellQuote(encodedPolicy) + " >/dev/null 2>&1";
+                    shellQuote(configFile.getAbsolutePath()) +
+                    " >/dev/null 2>&1";
 
             process = new ProcessBuilder("su", "-c", command)
                     .redirectErrorStream(true)
@@ -288,10 +312,29 @@ public final class RootCoreSession implements AutoCloseable {
                     manager, token, death, binderAlive
             );
         } catch (Throwable error) {
+            IRootCoreManager candidate = remoteRef.getAndSet(null);
+            if (candidate != null) {
+                try {
+                    candidate.close();
+                } catch (Throwable closeError) {
+                    error.addSuppressed(closeError);
+                }
+            }
+
+            tokenRef.set(null);
+            deathRef.set(null);
+
             try {
                 context.unregisterReceiver(receiver);
             } catch (Throwable ignored) {
             }
+
+            if (configFile.exists() && !configFile.delete()) {
+                android.util.Log.w(
+                        "RootCore", "Could not delete bootstrap config"
+                );
+            }
+
             if (process != null) terminateProcess(process);
             receiverThread.quitSafely();
             throw error;
@@ -395,8 +438,10 @@ public final class RootCoreSession implements AutoCloseable {
                 }
                 });
             } catch (RejectedExecutionException error) {
+                close();
                 throw remoteException(
-                        "Root Core executor is full or unavailable: " + operation,
+                        "Root Core executor is full or unavailable; session closed: "
+                                + operation,
                         error
                 );
             }
@@ -406,9 +451,14 @@ public final class RootCoreSession implements AutoCloseable {
             return future.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException error) {
             future.cancel(true);
+
+            // Binder transactions may ignore thread interruption. Closing the
+            // session asks the server to exit and starts the root-process reaper.
+            close();
+
             throw new RemoteException(
                     "Root Core Binder call timed out after "
-                            + timeoutMs + " ms: " + operation
+                            + timeoutMs + " ms; session was closed: " + operation
             );
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
@@ -547,6 +597,37 @@ public final class RootCoreSession implements AutoCloseable {
             process.destroyForcibly();
             Thread.currentThread().interrupt();
         }
+    }
+
+    private static File createSessionConfig(
+            Context context,
+            String sessionId,
+            String encodedPolicy
+    ) throws IOException {
+        File directory = new File(context.getFilesDir(), "rootcore");
+        if (!directory.isDirectory() && !directory.mkdirs()
+                && !directory.isDirectory()) {
+            throw new IOException("Cannot create Root Core directory");
+        }
+
+        File config = File.createTempFile("session-", ".cfg", directory);
+        try (FileOutputStream output = new FileOutputStream(config)) {
+            byte[] data = (sessionId + "\\n" + encodedPolicy + "\\n")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            output.write(data);
+            output.getFD().sync();
+        } catch (Throwable error) {
+            config.delete();
+            if (error instanceof IOException) throw (IOException) error;
+            throw new IOException("Cannot write Root Core bootstrap config", error);
+        }
+
+        // The parent directory is app-private; root can read the file.
+        config.setReadable(false, false);
+        config.setWritable(false, false);
+        config.setReadable(true, true);
+        config.setWritable(true, true);
+        return config;
     }
 
     private static synchronized File installBootstrapAsset(Context context)

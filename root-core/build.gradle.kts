@@ -33,8 +33,8 @@ val generatedRootCoreAssets =
 android.sourceSets.getByName("main").assets.srcDir(generatedRootCoreAssets)
 
 val bootstrapReleaseDir =
-    project(":root-core-bootstrap").layout.buildDirectory.dir(
-        "outputs/apk/release"
+    rootProject.layout.projectDirectory.dir(
+        "root-core-bootstrap/build/outputs/apk/release"
     )
 
 val extractRootCoreBootstrapDex = tasks.register("extractRootCoreBootstrapDex") {
@@ -43,7 +43,7 @@ val extractRootCoreBootstrapDex = tasks.register("extractRootCoreBootstrapDex") 
     outputs.file(generatedRootCoreAssets.map { it.file("main.jar") })
 
     doLast {
-        val releaseDir = bootstrapReleaseDir.get().asFile
+        val releaseDir = bootstrapReleaseDir.asFile
         val apkFiles = releaseDir.listFiles { file ->
             file.isFile && file.name.endsWith(".apk")
         }?.toList().orEmpty()
@@ -81,4 +81,9 @@ val extractRootCoreBootstrapDex = tasks.register("extractRootCoreBootstrapDex") 
 
 tasks.named("preBuild").configure {
     dependsOn(extractRootCoreBootstrapDex)
+}
+
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }

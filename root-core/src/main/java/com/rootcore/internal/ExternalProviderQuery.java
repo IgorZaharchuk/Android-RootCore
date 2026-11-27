@@ -418,17 +418,30 @@ final class ExternalProviderQuery {
     private static final int MAX_RESULT_CELLS = 2_800;
     private static final long MAX_RESULT_BYTES = 192L * 1024L;
 
-    private static void validateProjection(String[] projection) {
+    static void validateProjection(String[] projection) {
         if (projection == null) return;
 
         if (projection.length > MAX_PROJECTION_COLUMNS) {
             throw new IllegalArgumentException("Provider projection contains too many columns");
         }
 
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+
         for (String column : projection) {
-            if (column == null || column.trim().isEmpty()
-                    || column.length() > MAX_COLUMN_NAME_LENGTH) {
-                throw new IllegalArgumentException("Provider projection contains an invalid column");
+            if (column == null
+                    || column.length() > MAX_COLUMN_NAME_LENGTH
+                    || !(column.matches(
+                            "[A-Za-z_][A-Za-z0-9_]*(\\\\.[A-Za-z_][A-Za-z0-9_]*)?"
+                    ) || "*".equals(column))) {
+                throw new IllegalArgumentException(
+                        "Provider projection must contain plain column identifiers"
+                );
+            }
+
+            if (!seen.add(column)) {
+                throw new IllegalArgumentException(
+                        "Provider projection contains duplicate column: " + column
+                );
             }
         }
     }

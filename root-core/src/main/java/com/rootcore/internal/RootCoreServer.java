@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import com.rootcore.RootCorePolicy;
 import com.rootcore.ipc.IRootCoreManager;
+import com.rootcore.ipc.IRootCoreClient;
 
 
 public final class RootCoreServer extends IRootCoreManager.Stub {
@@ -41,6 +42,8 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
     private final RootCorePolicy policy;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ObjectRegistry objects = new ObjectRegistry();
+    private final ThreadLocal<List<RegisteredObject>> operationObjects =
+            new ThreadLocal<>();
     private final AtomicInteger activeOperations = new AtomicInteger(0);
     private static final int MAX_CONCURRENT_OPERATIONS = 16;
 
@@ -104,36 +107,41 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
     }
 
     @Override
-    public synchronized void connect(IBinder client) throws RemoteException {
+    public synchronized void connect(IRootCoreClient client)
+            throws RemoteException {
         enforceClient();
 
         if (closed) {
             throw new RemoteException("Root Core session is already closed");
         }
 
-        if (client == null || !client.isBinderAlive()) {
-            throw new RemoteException("Client token is not alive");
+        if (client == null || client.asBinder() == null
+                || !client.asBinder().isBinderAlive()) {
+            throw new RemoteException("Client callback is not alive");
         }
 
         if (connected) {
-            if (clientToken == client) return;
+            if (clientToken == client.asBinder()) return;
             throw new RemoteException("A client is already connected");
         }
 
-        clientToken = client;
+        // The client callback observes the real Binder caller UID.
+        // A forged broadcast/Binder cannot make this callback observe UID 0.
+        int peerUid = client.verifyRootPeer();
+        if (peerUid != 0) {
+            throw new SecurityException(
+                    "Root peer authentication failed; callback caller UID="
+                            + peerUid
+            );
+        }
+
+        clientToken = client.asBinder();
         deathRecipient = this::onClientDied;
-        client.linkToDeath(deathRecipient, 0);
+        clientToken.linkToDeath(deathRecipient, 0);
         connected = true;
         handler.removeCallbacks(idleShutdown);
 
-        android.util.Log.i(TAG, "Client connected");
-    }
-
-    private Bundle query(String uri, String[] projection) throws RemoteException {
-        enforceConnectedClient();
-        return ExternalProviderQuery.query(
-                uri, projection, clientUid, policy
-        );
+        android.util.Log.i(TAG, "Client connected; callback peer UID=0");
     }
 
     private void launchActivity(Intent intent) throws RemoteException {
@@ -162,9 +170,16 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
     @Override
     public Bundle execute(Bundle encodedRequest) throws RemoteException {
-        String requestId = safeEnvelopeString(encodedRequest, "requestId", "unknown");
-        String operation = safeEnvelopeString(encodedRequest, "operation", "UNKNOWN");
+        String requestId = safeEnvelopeString(
+                encodedRequest, "requestId", "unknown"
+        );
+        String operation = safeEnvelopeString(
+                encodedRequest, "operation", "UNKNOWN"
+        );
+
         boolean slotAcquired = false;
+        List<RegisteredObject> createdObjects = new ArrayList<>();
+        operationObjects.set(createdObjects);
 
         try {
             enforceConnectedClient();
@@ -188,10 +203,17 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
             com.rootcore.RootCoreValue result =
                     RootCoreDispatcher.dispatch(this, request);
 
-            return RootCoreCodec.encodeResponse(
+            Bundle response = RootCoreCodec.encodeResponse(
                     com.rootcore.RootCoreResponse.success(requestId, result)
             );
+
+            // Ownership is now transferred to the client-visible response.
+            createdObjects.clear();
+            return response;
+
         } catch (Throwable error) {
+            rollbackOperationObjects(createdObjects, error);
+
             Throwable cause = unwrap(error);
             String code = protocolErrorCode(cause);
             String message = cause.getClass().getSimpleName()
@@ -216,6 +238,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                 );
             }
         } finally {
+            operationObjects.remove();
             if (slotAcquired) activeOperations.decrementAndGet();
         }
     }
@@ -544,6 +567,101 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         return com.rootcore.RootCoreValue.voidValue();
     }
 
+    private static final class RegisteredObject {
+        final String id;
+        final ObjectEntry entry;
+
+        RegisteredObject(String id, ObjectEntry entry) {
+            this.id = id;
+            this.entry = entry;
+        }
+    }
+
+    private void registerObject(String id, ObjectEntry entry)
+            throws Throwable {
+        try {
+            if (!objects.register(id, entry)) {
+                throw new IllegalStateException(
+                        "RootCore session is closing"
+                );
+            }
+        } catch (Throwable registrationError) {
+            try {
+                entry.requestClose();
+            } catch (Throwable closeError) {
+                registrationError.addSuppressed(closeError);
+            }
+            throw registrationError;
+        }
+
+        List<RegisteredObject> current = operationObjects.get();
+        if (current == null) {
+            ObjectEntry removed = objects.remove(id);
+            try {
+                (removed == null ? entry : removed).requestClose();
+            } catch (Throwable closeError) {
+                // Preserve the missing transaction context as the cause.
+            }
+            throw new IllegalStateException(
+                    "Object registration outside an active operation"
+            );
+        }
+
+        try {
+            current.add(new RegisteredObject(id, entry));
+        } catch (Throwable trackingError) {
+            objects.remove(id);
+            try {
+                entry.requestClose();
+            } catch (Throwable closeError) {
+                trackingError.addSuppressed(closeError);
+            }
+            throw trackingError;
+        }
+    }
+
+    private void rollbackOperationObjects(
+            List<RegisteredObject> created,
+            Throwable originalError
+    ) {
+        List<ObjectEntry> closing = new ArrayList<>();
+
+        for (int i = created.size() - 1; i >= 0; i--) {
+            RegisteredObject registered = created.get(i);
+            ObjectEntry removed = objects.remove(registered.id);
+            ObjectEntry entry = removed == null
+                    ? registered.entry : removed;
+
+            try {
+                entry.requestClose();
+                closing.add(entry);
+            } catch (Throwable closeError) {
+                originalError.addSuppressed(closeError);
+            }
+        }
+
+        long deadline = System.nanoTime()
+                + RELEASE_CLOSE_TIMEOUT_MS * 1_000_000L;
+
+        for (ObjectEntry entry : closing) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0L) break;
+
+            try {
+                Throwable closeError = entry.closeAndWait(
+                        Math.max(1L, remaining / 1_000_000L)
+                );
+                if (closeError != null) {
+                    originalError.addSuppressed(closeError);
+                }
+            } catch (Throwable closeError) {
+                originalError.addSuppressed(closeError);
+            }
+        }
+
+        created.clear();
+    }
+
     private com.rootcore.RootCoreValue typedCreate(
         Map<String, com.rootcore.RootCoreValue> args
 ) throws Throwable {
@@ -567,18 +685,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
         String id = UUID.randomUUID().toString();
         ObjectEntry entry = new ObjectEntry(instance);
-        try {
-            if (!objects.register(id, entry)) {
-                throw new IllegalStateException("RootCore session is closing");
-            }
-        } catch (Throwable registrationError) {
-            try {
-                entry.requestClose();
-            } catch (Throwable closeRequestError) {
-                registrationError.addSuppressed(closeRequestError);
-            }
-            throw registrationError;
-        }
+        registerObject(id, entry);
 
         return com.rootcore.RootCoreValue.objectRef(
                 id, sessionId, instance.getClass().getName()
@@ -1071,10 +1178,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
         String id = UUID.randomUUID().toString();
         ObjectEntry entry = new ObjectEntry(value);
-        if (!objects.register(id, entry)) {
-            entry.requestClose();
-            throw new IllegalStateException("RootCore session is closing");
-        }
+        registerObject(id, entry);
         return com.rootcore.RootCoreValue.objectRef(
                 id, sessionId, value.getClass().getName()
         );
@@ -1134,110 +1238,6 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
             }
         }
         throw new NoSuchFieldException(type.getName() + "." + name);
-    }
-
-    private static Class<?> resolveType(String name) throws ClassNotFoundException {
-        if (name == null) throw new IllegalArgumentException("Type name is null");
-        switch (name) {
-            case "boolean": return boolean.class;
-            case "int": return int.class;
-            case "long": return long.class;
-            case "float": return float.class;
-            case "double": return double.class;
-            case "java.lang.String": return String.class;
-            case "android.os.Bundle": return Bundle.class;
-            default:
-                throw new IllegalArgumentException("Unsupported parameter type: " + name);
-        }
-    }
-
-    private static Object readArgument(Bundle args, int index, Class<?> type) {
-        String key = "arg" + index;
-        if (!args.containsKey(key)) {
-            throw new IllegalArgumentException("Missing argument: " + key);
-        }
-        if (type == boolean.class) return args.getBoolean(key);
-        if (type == int.class) return args.getInt(key);
-        if (type == long.class) return args.getLong(key);
-        if (type == float.class) return args.getFloat(key);
-        if (type == double.class) return args.getDouble(key);
-        if (type == String.class) return args.getString(key);
-        if (type == Bundle.class) return args.getBundle(key);
-        throw new IllegalArgumentException("Unsupported argument type: " + type);
-    }
-
-    private static Object[] decodeArguments(String[] names, Bundle args)
-            throws ClassNotFoundException {
-        if (names == null) names = new String[0];
-        if (args == null) args = new Bundle();
-        Object[] values = new Object[names.length];
-        for (int i = 0; i < names.length; i++) {
-            values[i] = readArgument(args, i, resolveType(names[i]));
-        }
-        return values;
-    }
-
-    private static Bundle encodeResult(Object value, Class<?> returnType) {
-        Bundle result = new Bundle();
-        result.putString("return_type", returnType.getName());
-        if (returnType == void.class) {
-            result.putString("value_kind", "void");
-        } else if (returnType == boolean.class || returnType == Boolean.class) {
-            result.putString("value_kind", "boolean");
-            result.putBoolean("value_boolean", (Boolean) value);
-        } else if (returnType == int.class || returnType == Integer.class) {
-            result.putString("value_kind", "int");
-            result.putInt("value_int", (Integer) value);
-        } else if (returnType == long.class || returnType == Long.class) {
-            result.putString("value_kind", "long");
-            result.putLong("value_long", (Long) value);
-        } else if (returnType == float.class || returnType == Float.class) {
-            result.putString("value_kind", "float");
-            result.putFloat("value_float", (Float) value);
-        } else if (returnType == double.class || returnType == Double.class) {
-            result.putString("value_kind", "double");
-            result.putDouble("value_double", (Double) value);
-        } else if (returnType == String.class) {
-            result.putString("value_kind", "string");
-            result.putString("value_string", (String) value);
-        } else if (returnType == Bundle.class) {
-            result.putString("value_kind", "bundle");
-            result.putBundle("value_bundle", (Bundle) value);
-        } else {
-            throw new IllegalArgumentException(
-                    "Unsupported return type: " + returnType.getName()
-            );
-        }
-        return result;
-    }
-
-
-
-
-
-
-
-    private static Bundle operationErrorResult(String operation, Throwable error) {
-        Throwable cause = error;
-        if (cause instanceof InvocationTargetException
-                && ((InvocationTargetException) cause).getCause() != null) {
-            cause = ((InvocationTargetException) cause).getCause();
-        }
-
-        Bundle result = new Bundle();
-        result.putString("status", "error");
-        result.putString("error_type", cause.getClass().getName());
-        result.putString(
-                "error_message",
-                operation + ": " + cause.getClass().getSimpleName()
-                        + ": " + String.valueOf(cause.getMessage())
-        );
-        return result;
-    }
-
-    private static String shortObjectId(String objectId) {
-        if (objectId == null) return "null";
-        return objectId.substring(0, Math.min(8, objectId.length()));
     }
 
     private static RemoteException asRemoteException(String message, Throwable error) {

@@ -9,6 +9,13 @@ public final class RootCore {
 
     private RootCore() {}
 
+    /**
+     * Opens a privileged RootCore session.
+     *
+     * @param timeoutMs total time allowed for root-manager authorization,
+     *                  bootstrap startup and Binder connection. The first
+     *                  invocation may display a root-grant confirmation.
+     */
     public static RootCoreSession open(
             Context context,
             RootCorePolicy policy,
