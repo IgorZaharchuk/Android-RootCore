@@ -87,12 +87,9 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         if (Build.VERSION.SDK_INT >= 34) {
             BroadcastOptions options = BroadcastOptions.makeBasic();
             options.setShareIdentityEnabled(true);
-            context.sendBroadcastAsUser(
-                    intent,
-                    targetUser,
-                    null,
-                    options.toBundle()
-            );
+            // RootServerMain supplies a package context for the target user.
+            // API 34 exposes the options overload only for sendBroadcast().
+            context.sendBroadcast(intent, null, options.toBundle());
         } else {
             context.sendBroadcastAsUser(intent, targetUser);
         }
