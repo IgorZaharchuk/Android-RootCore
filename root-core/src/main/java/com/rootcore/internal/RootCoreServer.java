@@ -141,10 +141,29 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         RootActivityLauncher.launch(intent, clientUid, policy);
     }
 
+    private static String safeEnvelopeString(
+            Bundle bundle, String key, String fallback
+    ) {
+        if (bundle == null) return fallback;
+        try {
+            Object value = bundle.get(key);
+            if (!(value instanceof String)) return fallback;
+            String text = (String) value;
+            if (text.trim().isEmpty()
+                    || text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                    > RootCoreCodec.MAX_STRING_BYTES) {
+                return fallback;
+            }
+            return text;
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
     @Override
     public Bundle execute(Bundle encodedRequest) throws RemoteException {
-        String requestId = "unknown";
-        String operation = "UNKNOWN";
+        String requestId = safeEnvelopeString(encodedRequest, "requestId", "unknown");
+        String operation = safeEnvelopeString(encodedRequest, "operation", "UNKNOWN");
         boolean slotAcquired = false;
 
         try {
@@ -414,13 +433,29 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                         new LinkedHashMap<>();
                 if (columns != null) {
                     for (int i = 0; i < columns.length; i++) {
-                        String cell = row.getString("c" + i);
-                        cells.put(
-                                "c" + i,
-                                cell == null
-                                        ? com.rootcore.RootCoreValue.nullValue()
-                                        : com.rootcore.RootCoreValue.of(cell)
-                        );
+                        Object cell = row.get("c" + i);
+                        com.rootcore.RootCoreValue value;
+                        if (cell == null) {
+                            value = com.rootcore.RootCoreValue.nullValue();
+                        } else if (cell instanceof String) {
+                            value = com.rootcore.RootCoreValue.of((String) cell);
+                        } else if (cell instanceof byte[]) {
+                            value = com.rootcore.RootCoreValue.of((byte[]) cell);
+                        } else if (cell instanceof Long) {
+                            value = com.rootcore.RootCoreValue.of((Long) cell);
+                        } else if (cell instanceof Integer) {
+                            value = com.rootcore.RootCoreValue.of((Integer) cell);
+                        } else if (cell instanceof Double) {
+                            value = com.rootcore.RootCoreValue.of((Double) cell);
+                        } else if (cell instanceof Float) {
+                            value = com.rootcore.RootCoreValue.of((Float) cell);
+                        } else {
+                            throw new IllegalStateException(
+                                    "Unsupported Provider cell value: "
+                                            + cell.getClass().getName()
+                            );
+                        }
+                        cells.put("c" + i, value);
                     }
                 }
                 rowValues.add(com.rootcore.RootCoreValue.struct(cells));
@@ -532,9 +567,17 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
         String id = UUID.randomUUID().toString();
         ObjectEntry entry = new ObjectEntry(instance);
-        if (!objects.register(id, entry)) {
-            entry.requestClose();
-            throw new IllegalStateException("RootCore session is closing");
+        try {
+            if (!objects.register(id, entry)) {
+                throw new IllegalStateException("RootCore session is closing");
+            }
+        } catch (Throwable registrationError) {
+            try {
+                entry.requestClose();
+            } catch (Throwable closeRequestError) {
+                registrationError.addSuppressed(closeRequestError);
+            }
+            throw registrationError;
         }
 
         return com.rootcore.RootCoreValue.objectRef(

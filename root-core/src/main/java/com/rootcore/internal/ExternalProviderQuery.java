@@ -254,23 +254,60 @@ final class ExternalProviderQuery {
                 Bundle row = new Bundle();
 
                 for (int i = 0; i < columns.length; i++) {
-                    String value = cursor.isNull(i)
-                            ? null
-                            : cursor.getString(i);
+                    String key = "c" + i;
+                    int type = cursor.getType(i);
 
-                    if (value != null) {
-                        estimatedResultBytes += value.length() * 3L;
+                    switch (type) {
+                        case Cursor.FIELD_TYPE_NULL:
+                            row.putString(key, null);
+                            estimatedResultBytes += 8L;
+                            break;
+
+                        case Cursor.FIELD_TYPE_STRING: {
+                            String value = cursor.getString(i);
+                            row.putString(key, value);
+                            estimatedResultBytes += value == null ? 0L
+                                    : value.getBytes(
+                                            java.nio.charset.StandardCharsets.UTF_8
+                                    ).length;
+                            break;
+                        }
+
+                        case Cursor.FIELD_TYPE_INTEGER:
+                            row.putLong(key, cursor.getLong(i));
+                            estimatedResultBytes += 8L;
+                            break;
+
+                        case Cursor.FIELD_TYPE_FLOAT:
+                            row.putDouble(key, cursor.getDouble(i));
+                            estimatedResultBytes += 8L;
+                            break;
+
+                        case Cursor.FIELD_TYPE_BLOB: {
+                            byte[] value = cursor.getBlob(i);
+                            if (value != null
+                                    && value.length > RootCoreCodec.MAX_BYTE_ARRAY_BYTES) {
+                                throw new IllegalStateException(
+                                        "Provider BLOB exceeds the maximum byte array size"
+                                );
+                            }
+                            row.putByteArray(key, value);
+                            estimatedResultBytes += value == null ? 0L : value.length;
+                            break;
+                        }
+
+                        default:
+                            throw new IllegalStateException(
+                                    "Unsupported Provider cursor cell type: " + type
+                            );
                     }
 
                     estimatedResultBytes += 16L;
-
                     if (estimatedResultBytes > MAX_RESULT_BYTES) {
                         throw new IllegalStateException(
                                 "Provider result exceeds the maximum result size"
                         );
                     }
-
-                    row.putString("c" + i, value);
                 }
 
                 rows.add(row);

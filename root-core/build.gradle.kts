@@ -32,22 +32,27 @@ val generatedRootCoreAssets =
 
 android.sourceSets.getByName("main").assets.srcDir(generatedRootCoreAssets)
 
-val bootstrapApk =
-    project(":root-core-bootstrap").layout.buildDirectory.file(
-        "outputs/apk/debug/root-core-bootstrap-debug.apk"
+val bootstrapReleaseDir =
+    project(":root-core-bootstrap").layout.buildDirectory.dir(
+        "outputs/apk/release"
     )
 
 val extractRootCoreBootstrapDex = tasks.register("extractRootCoreBootstrapDex") {
-    dependsOn(":root-core-bootstrap:assembleDebug")
-    inputs.file(bootstrapApk)
+    dependsOn(":root-core-bootstrap:assembleRelease")
+    inputs.dir(bootstrapReleaseDir)
     outputs.file(generatedRootCoreAssets.map { it.file("main.jar") })
 
     doLast {
-        val apkFile = bootstrapApk.get().asFile
-        check(apkFile.isFile) {
-            "Root Core bootstrap APK was not produced: $apkFile"
+        val releaseDir = bootstrapReleaseDir.get().asFile
+        val apkFiles = releaseDir.listFiles { file ->
+            file.isFile && file.name.endsWith(".apk")
+        }?.toList().orEmpty()
+
+        check(apkFiles.size == 1) {
+            "Expected exactly one bootstrap Release APK in $releaseDir, found ${apkFiles.size}"
         }
 
+        val apkFile = apkFiles.single()
         val output = generatedRootCoreAssets.get().file("main.jar").asFile
         output.parentFile.mkdirs()
 
@@ -59,7 +64,7 @@ val extractRootCoreBootstrapDex = tasks.register("extractRootCoreBootstrapDex") 
                     .toList()
 
                 check(dexEntries.isNotEmpty()) {
-                    "No DEX files found in bootstrap APK"
+                    "No DEX files found in bootstrap Release APK: $apkFile"
                 }
 
                 dexEntries.forEach { entry ->
@@ -70,7 +75,7 @@ val extractRootCoreBootstrapDex = tasks.register("extractRootCoreBootstrapDex") 
             }
         }
 
-        println("Root Core bootstrap DEX packaged: ${output.absolutePath}")
+        println("Root Core bootstrap Release DEX packaged: ${output.absolutePath}")
     }
 }
 
