@@ -122,16 +122,14 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         android.util.Log.i(TAG, "Client connected");
     }
 
-    @Override
-    public Bundle query(String uri, String[] projection) throws RemoteException {
+    private Bundle query(String uri, String[] projection) throws RemoteException {
         enforceConnectedClient();
         return ExternalProviderQuery.query(
                 uri, projection, clientUid, policy
         );
     }
 
-    @Override
-    public void launchActivity(Intent intent) throws RemoteException {
+    private void launchActivity(Intent intent) throws RemoteException {
         enforceConnectedClient();
         RootActivityLauncher.launch(intent, clientUid, policy);
     }
@@ -263,17 +261,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         return "EXECUTION_FAILED";
     }
 
-    private void enforceClientCodePermission() {
-        enforceConnectedClient();
-        if (!policy.allowsClientCodeExecution()) {
-            throw new SecurityException(
-                    "Client code execution is not allowed by RootCorePolicy"
-            );
-        }
-        if (Process.myUid() != 0) {
-            throw new SecurityException("Client code execution requires UID 0");
-        }
-    }
+
 
     com.rootcore.RootCoreValue dispatchTypedOperation(
             com.rootcore.RootCoreRequest request,
@@ -374,7 +362,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
     private com.rootcore.RootCoreValue typedQueryProvider(
             Map<String, com.rootcore.RootCoreValue> args
-    ) {
+    ) throws RemoteException {
         String uri = decodeUriExtension(requiredArg(args, "uri"));
 
         String[] projection = null;
@@ -446,7 +434,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
     private com.rootcore.RootCoreValue typedLaunchActivity(
             Map<String, com.rootcore.RootCoreValue> args
-    ) {
+    ) throws RemoteException {
         com.rootcore.RootCoreValue payload = extensionPayload(
                 requiredArg(args, "intent"), "INTENT", 1
         );
@@ -576,7 +564,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
         Object result;
         try {
-            result = entry.invoke(method, values);
+            result = method.invoke(target, values);
         } catch (InvocationTargetException error) {
             throw unwrap(error);
         }
@@ -621,7 +609,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         Map<String, com.rootcore.RootCoreValue> args
 ) throws Throwable {
     ObjectEntry entry = requireObject(args.get("object"));
-    entry.acquireLease();
+    Object target = entry.acquireLease();
     try {
         String name = stringArg(args, "fieldName");
         java.lang.reflect.Field field = findField(entry.type(), name);
@@ -631,7 +619,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         }
         if (!field.isAccessible()) field.setAccessible(true);
 
-        Object value = entry.readField(field);
+        Object value = field.get(target);
         return toRootValue(value, field.getType());
     } finally {
         entry.releaseLease();
@@ -642,7 +630,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         Map<String, com.rootcore.RootCoreValue> args
 ) throws Throwable {
     ObjectEntry entry = requireObject(args.get("object"));
-    entry.acquireLease();
+    Object target = entry.acquireLease();
     List<ObjectEntry> leases = new ArrayList<>();
 
     try {
@@ -660,7 +648,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         Object value = fromRootValue(
                 requiredArg(args, "value"), field.getType(), leases
         );
-        entry.writeField(field, value);
+        field.set(target, value);
         return com.rootcore.RootCoreValue.voidValue();
     } finally {
         releaseLeases(leases);
@@ -961,6 +949,9 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
         if (value.getClass().isArray()) {
             int length = java.lang.reflect.Array.getLength(value);
+            if (length > RootCoreCodec.MAX_COLLECTION_ITEMS) {
+                throw new ResourceLimitException("Result array exceeds item limit");
+            }
             List<com.rootcore.RootCoreValue> items = new ArrayList<>(length);
             for (int i = 0; i < length; i++) {
                 items.add(toRootValue(
@@ -981,8 +972,12 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
             return com.rootcore.RootCoreValue.list(items);
         }
         if (value instanceof Map) {
+            Map<?, ?> source = (Map<?, ?>) value;
+            if (source.size() > RootCoreCodec.MAX_COLLECTION_ITEMS) {
+                throw new ResourceLimitException("Result map exceeds item limit");
+            }
             Map<String, com.rootcore.RootCoreValue> fields = new HashMap<>();
-            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+            for (Map.Entry<?, ?> entry : source.entrySet()) {
                 if (!(entry.getKey() instanceof String)) {
                     throw new UnsupportedOperationException("Only String map keys are supported");
                 }
@@ -993,6 +988,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
             return com.rootcore.RootCoreValue.map(fields);
         }
 
+        requireClientClassOrigin(value.getClass());
         String id = UUID.randomUUID().toString();
         ObjectEntry entry = new ObjectEntry(value);
         if (!objects.register(id, entry)) {
@@ -1135,148 +1131,11 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         return result;
     }
 
-    @Override
-    public String createObject(
-            String className,
-            String[] constructorTypes,
-            Bundle arguments
-    ) throws RemoteException {
-        enforceClientCodePermission();
 
-        Object instance = null;
-        try {
-            if (className == null || !className.matches("[A-Za-z_$][A-Za-z0-9_$.]*")) {
-                throw new IllegalArgumentException("Invalid client class name");
-            }
 
-            Class<?> type = context.getClassLoader().loadClass(className);
-            Class<?>[] parameterTypes = new Class<?>[
-                    constructorTypes == null ? 0 : constructorTypes.length
-            ];
 
-            for (int i = 0; i < parameterTypes.length; i++) {
-                parameterTypes[i] = resolveType(constructorTypes[i]);
-            }
 
-            Constructor<?> constructor = type.getConstructor(parameterTypes);
-            Object[] values = decodeArguments(constructorTypes, arguments);
-            instance = constructor.newInstance(values);
 
-            String id = UUID.randomUUID().toString();
-            ObjectEntry entry = new ObjectEntry(instance);
-
-            if (!objects.register(id, entry)) {
-                entry.requestClose();
-                throw new IllegalStateException(
-                        "Root Core session is closing; object was not registered"
-                );
-            }
-
-            return id;
-        } catch (Throwable error) {
-            throw asRemoteException("Create client object failed", error);
-        }
-    }
-
-    @Override
-    public Bundle invokeObject(
-            String objectId,
-            String methodName,
-            String[] parameterTypes,
-            Bundle arguments
-    ) throws RemoteException {
-        enforceClientCodePermission();
-
-        android.util.Log.i(TAG,
-                "OBJECT_INVOKE_BEGIN session=" + sessionId.substring(0, 8)
-                        + " pid=" + Process.myPid()
-                        + " id=" + shortObjectId(objectId)
-                        + " exists=" + objects.containsKey(objectId));
-
-        try {
-            ObjectEntry entry = objects.get(objectId);
-            if (entry == null) {
-                throw new IllegalArgumentException("Unknown or released object ID");
-            }
-
-            if (methodName == null || !methodName.matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
-                throw new IllegalArgumentException("Invalid method name");
-            }
-
-            Class<?>[] types = new Class<?>[
-                    parameterTypes == null ? 0 : parameterTypes.length
-            ];
-
-            for (int i = 0; i < types.length; i++) {
-                types[i] = resolveType(parameterTypes[i]);
-            }
-
-            Method method = entry.instance().getClass().getMethod(methodName, types);
-            if (method.getDeclaringClass() == Object.class) {
-                throw new SecurityException("Object base methods are not callable");
-            }
-
-            Object[] values = decodeArguments(parameterTypes, arguments);
-            Object value = entry.invoke(method, values);
-
-            Bundle result = encodeResult(value, method.getReturnType());
-            result.putString("status", "success");
-
-            android.util.Log.i(TAG,
-                    "OBJECT_INVOKE_SUCCESS session=" + sessionId.substring(0, 8)
-                            + " id=" + shortObjectId(objectId));
-            return result;
-        } catch (Throwable error) {
-            android.util.Log.e(TAG,
-                    "OBJECT_INVOKE_ERROR session=" + sessionId.substring(0, 8)
-                            + " id=" + shortObjectId(objectId),
-                    error);
-            return operationErrorResult("Invoke client object failed", error);
-        }
-    }
-
-    @Override
-    public Bundle releaseObject(String objectId) throws RemoteException {
-        enforceClientCodePermission();
-
-        try {
-            ObjectEntry removed = objects.remove(objectId);
-
-            android.util.Log.i(TAG,
-                    "OBJECT_RELEASE session=" + sessionId.substring(0, 8)
-                            + " id=" + shortObjectId(objectId)
-                            + " removed=" + (removed != null)
-                            + " size=" + objects.size());
-
-            if (removed == null) {
-                throw new IllegalArgumentException(
-                        "Unknown or already released object ID"
-                );
-            }
-
-            Throwable closeError = removed.closeAndWait(
-                    RELEASE_CLOSE_TIMEOUT_MS
-            );
-
-            if (closeError != null) {
-                throw new IllegalStateException(
-                        "Object was released, but close failed",
-                        closeError
-                );
-            }
-
-            Bundle result = new Bundle();
-            result.putString("status", "success");
-            result.putBoolean("released", true);
-            return result;
-        } catch (Throwable error) {
-            android.util.Log.e(TAG,
-                    "OBJECT_RELEASE_ERROR session=" + sessionId.substring(0, 8)
-                            + " id=" + shortObjectId(objectId),
-                    error);
-            return operationErrorResult("Release client object failed", error);
-        }
-    }
 
     private static Bundle operationErrorResult(String operation, Throwable error) {
         Throwable cause = error;
@@ -1452,12 +1311,6 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                 if (closeStarted || closeFinished) return;
                 closeStarted = true;
 
-                if (!(instance instanceof AutoCloseable)) {
-                    closeFinished = true;
-                    notifyAll();
-                    return;
-                }
-
                 worker = new Thread(this::performClose, "RootCoreObjectClose");
                 worker.setDaemon(true);
             }
@@ -1487,7 +1340,9 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                     }
                 }
 
-                ((AutoCloseable) instance).close();
+                if (instance instanceof AutoCloseable) {
+                    ((AutoCloseable) instance).close();
+                }
             } catch (Exception error) {
                 closeError = error;
             } catch (Error error) {

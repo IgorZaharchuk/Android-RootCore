@@ -323,129 +323,17 @@ public final class RootCoreSession implements AutoCloseable {
         return callRemote("ping", () -> remote.ping());
     }
 
-    public String createObject(
-            String className,
-            String[] constructorTypes,
-            Bundle arguments
-    ) throws RemoteException {
-        if (className == null || className.isBlank()) {
-            throw new IllegalArgumentException("Class name is empty");
-        }
-        String objectId = callRemote(
-                "createObject",
-                () -> remote.createObject(
-                        className,
-                        constructorTypes == null ? new String[0] : constructorTypes,
-                        arguments == null ? new Bundle() : arguments
-                )
-        );
-        if (objectId == null || objectId.isBlank()) {
-            throw new RemoteException("Root Core returned an empty object ID");
-        }
-        return objectId;
-    }
 
-    public Bundle invokeObject(
-            String objectId,
-            String methodName,
-            String[] parameterTypes,
-            Bundle arguments
-    ) throws RemoteException {
-        if (objectId == null || objectId.isBlank()
-                || methodName == null || methodName.isBlank()) {
-            throw new IllegalArgumentException("Object ID or method name is empty");
-        }
-        Bundle result = callRemote(
-                "invokeObject",
-                () -> remote.invokeObject(
-                        objectId,
-                        methodName,
-                        parameterTypes == null ? new String[0] : parameterTypes,
-                        arguments == null ? new Bundle() : arguments
-                )
-        );
-        requireSuccessfulObjectOperation(result, "invokeObject");
-        return result;
-    }
 
-    public void releaseObject(String objectId) throws RemoteException {
-        if (objectId == null || objectId.isBlank()) {
-            throw new IllegalArgumentException("Object ID is empty");
-        }
 
-        Bundle result = callRemote(
-                "releaseObject",
-                () -> remote.releaseObject(objectId)
-        );
-        requireSuccessfulObjectOperation(result, "releaseObject");
-    }
 
-    private static void requireSuccessfulObjectOperation(
-            Bundle result,
-            String operation
-    ) throws RemoteException {
-        if (result == null) {
-            throw new RemoteException(
-                    "Root Core returned a null result for " + operation
-            );
-        }
 
-        String status = result.getString("status");
-        if ("error".equals(status)) {
-            String type = result.getString("error_type", "UnknownError");
-            String message = result.getString(
-                    "error_message",
-                    "Root Core operation failed without a message"
-            );
-            throw new RemoteException(
-                    "Root Core " + operation + " failed ["
-                            + type + "]: " + message
-            );
-        }
 
-        if (!"success".equals(status)) {
-            throw new RemoteException(
-                    "Root Core returned an invalid status for " + operation
-            );
-        }
-    }
 
-    public Bundle queryProvider(Uri uri, String[] projection) throws RemoteException {
-        if (uri == null) throw new IllegalArgumentException("URI is null");
 
-        Bundle result = callRemote(
-                "queryProvider",
-                () -> remote.query(uri.toString(), projection)
-        );
-        if (result == null) {
-            throw new RemoteException(
-                    "Root Core server returned a null Bundle for Provider query"
-            );
-        }
-        return result;
-    }
 
-    public void launchActivity(
-            ComponentName component,
-            String action,
-            Bundle extras,
-            int flags
-    ) throws RemoteException {
-        if (component == null) {
-            throw new IllegalArgumentException("Explicit Activity component is required");
-        }
 
-        Intent intent = new Intent();
-        if (action != null) intent.setAction(action);
-        intent.setComponent(component);
-        intent.addFlags(flags);
-        if (extras != null) intent.putExtras(extras);
 
-        callRemote("launchActivity", 20_000L, () -> {
-            remote.launchActivity(intent);
-            return null;
-        });
-    }
 
     private static RemoteException remoteException(
             String message,

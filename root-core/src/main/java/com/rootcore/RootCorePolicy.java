@@ -385,7 +385,7 @@ public final class RootCorePolicy {
         }
 
         public Builder allowProviderAuthority(String authority) {
-            if (authority == null || authority.isBlank()
+            if (authority == null || authority.trim().isEmpty()
                     || authority.contains("/")
                     || authority.contains(":")
                     || authority.contains(" ")) {
@@ -423,7 +423,7 @@ public final class RootCorePolicy {
                 String key = entry.getKey();
                 ExtraType type = entry.getValue();
 
-                if (key == null || key.isBlank() || type == null) {
+                if (key == null || key.trim().isEmpty() || type == null) {
                     throw new IllegalArgumentException(
                             "Invalid allowed Activity extra"
                     );
