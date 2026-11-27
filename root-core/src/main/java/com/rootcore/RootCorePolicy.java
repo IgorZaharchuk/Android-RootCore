@@ -49,11 +49,15 @@ public final class RootCorePolicy {
     private final Set<String> providerAuthorities;
     private final Map<String, ActivityRule> activityRules;
     private final boolean executeClientCode;
+    private final Set<String> allowedOperations;
+    private final Set<String> allowedExtensions;
 
     private RootCorePolicy(
             Set<String> providerAuthorities,
             Map<String, ActivityRule> activityRules,
-            boolean executeClientCode
+            boolean executeClientCode,
+            Set<String> allowedOperations,
+            Set<String> allowedExtensions
     ) {
         this.providerAuthorities = Collections.unmodifiableSet(
                 new LinkedHashSet<>(providerAuthorities)
@@ -62,6 +66,12 @@ public final class RootCorePolicy {
                 new LinkedHashMap<>(activityRules)
         );
         this.executeClientCode = executeClientCode;
+        this.allowedOperations = Collections.unmodifiableSet(
+                new LinkedHashSet<>(allowedOperations)
+        );
+        this.allowedExtensions = Collections.unmodifiableSet(
+                new LinkedHashSet<>(allowedExtensions)
+        );
     }
 
     public static Builder builder() {
@@ -74,6 +84,15 @@ public final class RootCorePolicy {
 
     public boolean allowsClientCodeExecution() {
         return executeClientCode;
+    }
+
+    public boolean allowsOperation(String operation) {
+        return operation != null && allowedOperations.contains(operation);
+    }
+
+    public boolean allowsExtension(String typeId, int version) {
+        return typeId != null
+                && allowedExtensions.contains(typeId + ":" + version);
     }
 
     public boolean allowsProviderAuthority(String authority) {
@@ -146,6 +165,15 @@ public final class RootCorePolicy {
             JSONObject json = new JSONObject();
             JSONArray providers = new JSONArray();
             JSONArray activities = new JSONArray();
+            JSONArray operations = new JSONArray();
+            JSONArray extensions = new JSONArray();
+
+            for (String operation : allowedOperations) {
+                operations.put(operation);
+            }
+            for (String extension : allowedExtensions) {
+                extensions.put(extension);
+            }
 
             for (String authority : providerAuthorities) {
                 providers.put(authority);
@@ -173,6 +201,8 @@ public final class RootCorePolicy {
             json.put("providers", providers);
             json.put("activities", activities);
             json.put("executeClientCode", executeClientCode);
+            json.put("operations", operations);
+            json.put("extensions", extensions);
 
             return Base64.encodeToString(
                     json.toString().getBytes(StandardCharsets.UTF_8),
@@ -203,6 +233,32 @@ public final class RootCorePolicy {
             Builder builder = builder();
             if (json.optBoolean("executeClientCode", false)) {
                 builder.allowClientCodeExecution();
+            }
+
+            // Older policy payloads have no operation/extension grants.
+            // Missing fields therefore preserve deny-by-default behavior.
+            JSONArray operations = json.optJSONArray("operations");
+            if (operations != null) {
+                for (int i = 0; i < operations.length(); i++) {
+                    builder.allowOperation(operations.getString(i));
+                }
+            }
+
+            JSONArray extensions = json.optJSONArray("extensions");
+            if (extensions != null) {
+                for (int i = 0; i < extensions.length(); i++) {
+                    String rule = extensions.getString(i);
+                    int split = rule.lastIndexOf(':');
+                    if (split <= 0) {
+                        throw new IllegalArgumentException(
+                                "Invalid extension policy rule"
+                        );
+                    }
+                    builder.allowExtension(
+                            rule.substring(0, split),
+                            Integer.parseInt(rule.substring(split + 1))
+                    );
+                }
             }
 
             for (int i = 0; i < providers.length(); i++) {
@@ -256,6 +312,72 @@ public final class RootCorePolicy {
         private final Map<String, ActivityRule> activities =
                 new LinkedHashMap<>();
         private boolean executeClientCode;
+        private final Set<String> operations = new LinkedHashSet<>();
+        private final Set<String> extensions = new LinkedHashSet<>();
+
+        public Builder allowOperation(String operation) {
+            if (operation == null || !operation.matches("[A-Z_]+")) {
+                throw new IllegalArgumentException("Invalid operation");
+            }
+            operations.add(operation);
+            return this;
+        }
+
+        public Builder allowExtension(String typeId, int version) {
+            if (typeId == null || !typeId.matches("[A-Z_]+") || version < 1) {
+                throw new IllegalArgumentException("Invalid extension rule");
+            }
+            extensions.add(typeId + ":" + version);
+            return this;
+        }
+
+        public Builder allowCreateObject() {
+            return allowOperation("CREATE_OBJECT");
+        }
+
+        public Builder allowInvokeMethod() {
+            return allowOperation("INVOKE_METHOD");
+        }
+
+        public Builder allowReleaseObject() {
+            return allowOperation("RELEASE_OBJECT");
+        }
+
+        public Builder allowGetField() {
+            return allowOperation("GET_FIELD");
+        }
+
+        public Builder allowSetField() {
+            return allowOperation("SET_FIELD");
+        }
+
+        public Builder allowGetStaticField() {
+            return allowOperation("GET_STATIC_FIELD");
+        }
+
+        public Builder allowSetStaticField() {
+            return allowOperation("SET_STATIC_FIELD");
+        }
+
+        public Builder allowQueryProvider() {
+            return allowOperation("QUERY_PROVIDER");
+        }
+
+        public Builder allowLaunchActivity() {
+            return allowOperation("LAUNCH_ACTIVITY");
+        }
+
+        public Builder allowUriExtension() {
+            return allowExtension("URI", 1);
+        }
+
+        public Builder allowComponentNameExtension() {
+            return allowExtension("COMPONENT_NAME", 1);
+        }
+
+        public Builder allowIntentExtension() {
+            return allowExtension("INTENT", 1);
+        }
 
         public Builder allowClientCodeExecution() {
             this.executeClientCode = true;
@@ -320,7 +442,10 @@ public final class RootCorePolicy {
         }
 
         public RootCorePolicy build() {
-            return new RootCorePolicy(providers, activities, executeClientCode);
+            return new RootCorePolicy(
+                    providers, activities, executeClientCode,
+                    operations, extensions
+            );
         }
     }
 }

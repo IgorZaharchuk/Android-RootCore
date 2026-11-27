@@ -21,6 +21,8 @@ final class RootCoreDispatcher {
             case "SET_FIELD":
             case "GET_STATIC_FIELD":
             case "SET_STATIC_FIELD":
+            case "QUERY_PROVIDER":
+            case "LAUNCH_ACTIVITY":
                 return server.dispatchTypedOperation(request, operation);
             default:
                 throw new IllegalArgumentException(

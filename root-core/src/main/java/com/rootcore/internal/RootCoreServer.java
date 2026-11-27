@@ -17,9 +17,11 @@ import java.lang.reflect.Method;
 import java.util.UUID;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.rootcore.RootCorePolicy;
 import com.rootcore.ipc.IRootCoreManager;
@@ -38,6 +40,8 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
     private final RootCorePolicy policy;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ObjectRegistry objects = new ObjectRegistry();
+    private final AtomicInteger activeOperations = new AtomicInteger(0);
+    private static final int MAX_CONCURRENT_OPERATIONS = 16;
 
     private IBinder clientToken;
     private IBinder.DeathRecipient deathRecipient;
@@ -136,13 +140,26 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
     public Bundle execute(Bundle encodedRequest) throws RemoteException {
         String requestId = "unknown";
         String operation = "UNKNOWN";
+        boolean slotAcquired = false;
+
         try {
-            enforceClientCodePermission();
+            enforceConnectedClient();
 
             com.rootcore.RootCoreRequest request =
                     RootCoreCodec.decodeRequest(encodedRequest);
             requestId = request.getRequestId();
             operation = request.getOperation();
+
+            enforceTypedOperationPermission(operation);
+
+            int active = activeOperations.incrementAndGet();
+            if (active > MAX_CONCURRENT_OPERATIONS) {
+                activeOperations.decrementAndGet();
+                throw new ResourceLimitException(
+                        "Concurrent RootCore operation limit reached"
+                );
+            }
+            slotAcquired = true;
 
             com.rootcore.RootCoreValue result =
                     RootCoreDispatcher.dispatch(this, request);
@@ -170,10 +187,60 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                         )
                 );
             } catch (Throwable encodingError) {
-                throw asRemoteException("RootCore protocol response failed", encodingError);
+                throw asRemoteException(
+                        "RootCore protocol response failed", encodingError
+                );
             }
+        } finally {
+            if (slotAcquired) activeOperations.decrementAndGet();
         }
     }
+
+    private void enforceTypedOperationPermission(String operation) {
+        if (!policy.allowsOperation(operation)) {
+            throw new SecurityException(
+                    "Operation denied by RootCorePolicy: " + operation
+            );
+        }
+
+        switch (operation) {
+            case "CREATE_OBJECT":
+            case "INVOKE_METHOD":
+            case "RELEASE_OBJECT":
+            case "GET_FIELD":
+            case "SET_FIELD":
+            case "GET_STATIC_FIELD":
+            case "SET_STATIC_FIELD":
+                if (!policy.allowsClientCodeExecution()) {
+                    throw new SecurityException(
+                            "Client code execution denied by RootCorePolicy"
+                    );
+                }
+                if (Process.myUid() != 0) {
+                    throw new SecurityException(
+                            "Client code execution requires UID 0"
+                    );
+                }
+                return;
+
+            case "QUERY_PROVIDER":
+            case "LAUNCH_ACTIVITY":
+                return;
+
+            default:
+                throw new IllegalArgumentException(
+                        "Unknown RootCore operation: " + operation
+                );
+        }
+    }
+
+    private static final class ResourceLimitException
+            extends RuntimeException {
+        ResourceLimitException(String message) {
+            super(message);
+        }
+    }
+
 
     private static Throwable unwrap(Throwable error) {
         Throwable current = error;
@@ -185,6 +252,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
     }
 
     private static String protocolErrorCode(Throwable error) {
+        if (error instanceof ResourceLimitException) return "RESOURCE_LIMIT";
         if (error instanceof SecurityException) return "PERMISSION_DENIED";
         if (error instanceof NoSuchFieldException) return "FIELD_NOT_FOUND";
         if (error instanceof NoSuchMethodException) return "METHOD_NOT_FOUND";
@@ -228,9 +296,227 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                 return typedGetStaticField(args);
             case "SET_STATIC_FIELD":
                 return typedSetStaticField(args);
+            case "QUERY_PROVIDER":
+                return typedQueryProvider(args);
+            case "LAUNCH_ACTIVITY":
+                return typedLaunchActivity(args);
             default:
                 throw new IllegalArgumentException("Unsupported operation: " + operation);
         }
+    }
+
+
+    private com.rootcore.RootCoreValue extensionPayload(
+            com.rootcore.RootCoreValue value,
+            String expectedType,
+            int expectedVersion
+    ) {
+        if (value == null
+                || value.getKind() != com.rootcore.RootCoreValue.Kind.EXTENSION) {
+            throw new IllegalArgumentException("Expected extension " + expectedType);
+        }
+
+        Map<String, com.rootcore.RootCoreValue> envelope = value.asFields();
+        com.rootcore.RootCoreValue type = envelope.get("typeId");
+        com.rootcore.RootCoreValue version = envelope.get("version");
+        com.rootcore.RootCoreValue payload = envelope.get("payload");
+
+        if (type == null || version == null || payload == null
+                || type.getKind() != com.rootcore.RootCoreValue.Kind.STRING
+                || version.getKind() != com.rootcore.RootCoreValue.Kind.INT) {
+            throw new IllegalArgumentException("Malformed extension envelope");
+        }
+
+        if (!expectedType.equals(type.asString())
+                || expectedVersion != version.asInt()) {
+            throw new IllegalArgumentException("Unexpected extension type/version");
+        }
+
+        if (!policy.allowsExtension(expectedType, expectedVersion)) {
+            throw new SecurityException(
+                    "Extension denied by RootCorePolicy: " + expectedType
+            );
+        }
+        return payload;
+    }
+
+    private String decodeUriExtension(com.rootcore.RootCoreValue value) {
+        com.rootcore.RootCoreValue payload =
+                extensionPayload(value, "URI", 1);
+        if (payload.getKind() != com.rootcore.RootCoreValue.Kind.STRING) {
+            throw new IllegalArgumentException("URI payload must be a string");
+        }
+        return payload.asString();
+    }
+
+    private android.content.ComponentName decodeComponentName(
+            com.rootcore.RootCoreValue value
+    ) {
+        com.rootcore.RootCoreValue payload =
+                extensionPayload(value, "COMPONENT_NAME", 1);
+        if (payload.getKind() != com.rootcore.RootCoreValue.Kind.STRUCT) {
+            throw new IllegalArgumentException("ComponentName payload must be a struct");
+        }
+
+        Map<String, com.rootcore.RootCoreValue> fields = payload.asFields();
+        com.rootcore.RootCoreValue pkg = fields.get("packageName");
+        com.rootcore.RootCoreValue cls = fields.get("className");
+
+        if (pkg == null || cls == null
+                || pkg.getKind() != com.rootcore.RootCoreValue.Kind.STRING
+                || cls.getKind() != com.rootcore.RootCoreValue.Kind.STRING) {
+            throw new IllegalArgumentException("Invalid ComponentName payload");
+        }
+        return new android.content.ComponentName(
+                pkg.asString(), cls.asString()
+        );
+    }
+
+    private com.rootcore.RootCoreValue typedQueryProvider(
+            Map<String, com.rootcore.RootCoreValue> args
+    ) {
+        String uri = decodeUriExtension(requiredArg(args, "uri"));
+
+        String[] projection = null;
+        com.rootcore.RootCoreValue projectionValue = args.get("projection");
+        if (projectionValue != null
+                && projectionValue.getKind()
+                != com.rootcore.RootCoreValue.Kind.NULL) {
+            if (projectionValue.getKind()
+                    != com.rootcore.RootCoreValue.Kind.ARRAY
+                    && projectionValue.getKind()
+                    != com.rootcore.RootCoreValue.Kind.LIST) {
+                throw new IllegalArgumentException("Projection must be an array/list");
+            }
+
+            List<com.rootcore.RootCoreValue> values =
+                    projectionValue.asSequence();
+            projection = new String[values.size()];
+            for (int i = 0; i < values.size(); i++) {
+                if (values.get(i).getKind()
+                        != com.rootcore.RootCoreValue.Kind.STRING) {
+                    throw new IllegalArgumentException(
+                            "Projection entries must be strings"
+                    );
+                }
+                projection[i] = values.get(i).asString();
+            }
+        }
+
+        Bundle result = ExternalProviderQuery.query(
+                uri, projection, clientUid, policy
+        );
+
+        String[] columns = result.getStringArray("columns");
+        ArrayList<Bundle> rows = result.getParcelableArrayList("rows");
+
+        List<com.rootcore.RootCoreValue> columnValues = new ArrayList<>();
+        if (columns != null) {
+            for (String column : columns) {
+                columnValues.add(com.rootcore.RootCoreValue.of(column));
+            }
+        }
+
+        List<com.rootcore.RootCoreValue> rowValues = new ArrayList<>();
+        if (rows != null) {
+            for (Bundle row : rows) {
+                Map<String, com.rootcore.RootCoreValue> cells =
+                        new LinkedHashMap<>();
+                if (columns != null) {
+                    for (int i = 0; i < columns.length; i++) {
+                        String cell = row.getString("c" + i);
+                        cells.put(
+                                "c" + i,
+                                cell == null
+                                        ? com.rootcore.RootCoreValue.nullValue()
+                                        : com.rootcore.RootCoreValue.of(cell)
+                        );
+                    }
+                }
+                rowValues.add(com.rootcore.RootCoreValue.struct(cells));
+            }
+        }
+
+        Map<String, com.rootcore.RootCoreValue> output =
+                new LinkedHashMap<>();
+        output.put("columns", com.rootcore.RootCoreValue.array(columnValues));
+        output.put("rows", com.rootcore.RootCoreValue.array(rowValues));
+        return com.rootcore.RootCoreValue.struct(output);
+    }
+
+    private com.rootcore.RootCoreValue typedLaunchActivity(
+            Map<String, com.rootcore.RootCoreValue> args
+    ) {
+        com.rootcore.RootCoreValue payload = extensionPayload(
+                requiredArg(args, "intent"), "INTENT", 1
+        );
+        if (payload.getKind() != com.rootcore.RootCoreValue.Kind.STRUCT) {
+            throw new IllegalArgumentException("Intent payload must be a struct");
+        }
+
+        Map<String, com.rootcore.RootCoreValue> fields = payload.asFields();
+        Intent intent = new Intent();
+
+        com.rootcore.RootCoreValue componentValue = fields.get("component");
+        if (componentValue == null) {
+            throw new IllegalArgumentException("Intent component is required");
+        }
+        intent.setComponent(decodeComponentName(componentValue));
+
+        com.rootcore.RootCoreValue action = fields.get("action");
+        if (action != null
+                && action.getKind() != com.rootcore.RootCoreValue.Kind.NULL) {
+            if (action.getKind() != com.rootcore.RootCoreValue.Kind.STRING) {
+                throw new IllegalArgumentException("Intent action must be a string");
+            }
+            intent.setAction(action.asString());
+        }
+
+        com.rootcore.RootCoreValue flags = fields.get("flags");
+        if (flags != null) {
+            if (flags.getKind() != com.rootcore.RootCoreValue.Kind.INT) {
+                throw new IllegalArgumentException("Intent flags must be INT");
+            }
+            intent.setFlags(flags.asInt());
+        }
+
+        com.rootcore.RootCoreValue extras = fields.get("extras");
+        if (extras != null) {
+            if (extras.getKind() != com.rootcore.RootCoreValue.Kind.STRUCT
+                    && extras.getKind() != com.rootcore.RootCoreValue.Kind.MAP) {
+                throw new IllegalArgumentException("Intent extras must be a map");
+            }
+
+            for (Map.Entry<String, com.rootcore.RootCoreValue> entry
+                    : extras.asFields().entrySet()) {
+                String key = entry.getKey();
+                com.rootcore.RootCoreValue item = entry.getValue();
+                switch (item.getKind()) {
+                    case STRING:
+                        intent.putExtra(key, item.asString());
+                        break;
+                    case BOOLEAN:
+                        intent.putExtra(key, item.asBoolean());
+                        break;
+                    case INT:
+                        intent.putExtra(key, item.asInt());
+                        break;
+                    case LONG:
+                        intent.putExtra(key, item.asLong());
+                        break;
+                    case FLOAT:
+                        intent.putExtra(key, item.asFloat());
+                        break;
+                    default:
+                        throw new IllegalArgumentException(
+                                "Unsupported Intent extra type: " + key
+                        );
+                }
+            }
+        }
+
+        launchActivity(intent);
+        return com.rootcore.RootCoreValue.voidValue();
     }
 
     private com.rootcore.RootCoreValue typedCreate(
@@ -240,6 +526,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
     try {
         String className = stringArg(args, "className");
         Class<?> type = loadClientType(className);
+        requireClientClassOrigin(type);
         Class<?>[] parameterTypes = typeArray(args.get("parameterTypes"));
         Object[] values = objectArray(args.get("arguments"), parameterTypes, leases);
 
@@ -385,7 +672,10 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
             Map<String, com.rootcore.RootCoreValue> args
     ) throws Throwable {
         Class<?> type = loadClientType(stringArg(args, "className"));
-        java.lang.reflect.Field field = findField(type, stringArg(args, "fieldName"));
+        requireClientClassOrigin(type);
+
+        java.lang.reflect.Field field =
+                findField(type, stringArg(args, "fieldName"));
         if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
             throw new IllegalArgumentException("Field is not static");
         }
@@ -394,30 +684,32 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
     }
 
     private com.rootcore.RootCoreValue typedSetStaticField(
-        Map<String, com.rootcore.RootCoreValue> args
-) throws Throwable {
-    List<ObjectEntry> leases = new ArrayList<>();
-    try {
-        Class<?> type = loadClientType(stringArg(args, "className"));
-        java.lang.reflect.Field field = findField(type, stringArg(args, "fieldName"));
+            Map<String, com.rootcore.RootCoreValue> args
+    ) throws Throwable {
+        List<ObjectEntry> leases = new ArrayList<>();
+        try {
+            Class<?> type = loadClientType(stringArg(args, "className"));
+            requireClientClassOrigin(type);
 
-        if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
-            throw new IllegalArgumentException("Field is not static");
-        }
-        if (java.lang.reflect.Modifier.isFinal(field.getModifiers())) {
-            throw new IllegalArgumentException("Final fields cannot be modified");
-        }
-        if (!field.isAccessible()) field.setAccessible(true);
+            java.lang.reflect.Field field =
+                    findField(type, stringArg(args, "fieldName"));
+            if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                throw new IllegalArgumentException("Field is not static");
+            }
+            if (java.lang.reflect.Modifier.isFinal(field.getModifiers())) {
+                throw new IllegalArgumentException("Final fields cannot be modified");
+            }
+            if (!field.isAccessible()) field.setAccessible(true);
 
-        Object value = fromRootValue(
-                requiredArg(args, "value"), field.getType(), leases
-        );
-        field.set(null, value);
-        return com.rootcore.RootCoreValue.voidValue();
-    } finally {
-        releaseLeases(leases);
+            Object value = fromRootValue(
+                    requiredArg(args, "value"), field.getType(), leases
+            );
+            field.set(null, value);
+            return com.rootcore.RootCoreValue.voidValue();
+        } finally {
+            releaseLeases(leases);
+        }
     }
-}
 
     private ObjectEntry requireObject(com.rootcore.RootCoreValue value) {
     ObjectRef ref = objectRef(value);
@@ -497,6 +789,29 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                     return java.lang.reflect.Array.newInstance(component, 0).getClass();
                 }
                 return context.getClassLoader().loadClass(name);
+        }
+    }
+
+
+    private void requireClientClassOrigin(Class<?> type) {
+        if (type == null) {
+            throw new IllegalArgumentException("Client class is null");
+        }
+
+        ClassLoader appLoader = context.getClassLoader();
+        ClassLoader actual = type.getClassLoader();
+
+        // Permit classes defined by the application loader and its
+        // descendants (for example, application plugin/dependency loaders).
+        ClassLoader current = actual;
+        while (current != null && current != appLoader) {
+            current = current.getParent();
+        }
+        if (current != appLoader) {
+            throw new SecurityException(
+                    "Class is not defined by the client application loader: "
+                            + type.getName()
+            );
         }
     }
 
@@ -1006,6 +1321,11 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
         synchronized boolean register(String id, ObjectEntry entry) {
             if (closed) return false;
+            if (entries.size() >= 256) {
+                throw new ResourceLimitException(
+                        "RootCore object limit reached (256)"
+                );
+            }
             entries.put(id, entry);
             return true;
         }
