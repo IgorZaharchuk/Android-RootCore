@@ -182,26 +182,19 @@ public final class RootCoreCodec {
             case VOID:
                 return RootCoreValue.voidValue();
             case BOOLEAN:
-                requireKey(in, "v");
-                return RootCoreValue.of(in.getBoolean("v"));
+                return RootCoreValue.of(requiredTyped(in, "v", Boolean.class));
             case BYTE:
-                requireKey(in, "v");
-                return RootCoreValue.of(in.getByte("v"));
+                return RootCoreValue.of(requiredTyped(in, "v", Byte.class));
             case SHORT:
-                requireKey(in, "v");
-                return RootCoreValue.of(in.getShort("v"));
+                return RootCoreValue.of(requiredTyped(in, "v", Short.class));
             case INT:
-                requireKey(in, "v");
-                return RootCoreValue.of(in.getInt("v"));
+                return RootCoreValue.of(requiredTyped(in, "v", Integer.class));
             case LONG:
-                requireKey(in, "v");
-                return RootCoreValue.of(in.getLong("v"));
+                return RootCoreValue.of(requiredTyped(in, "v", Long.class));
             case FLOAT:
-                requireKey(in, "v");
-                return RootCoreValue.of(in.getFloat("v"));
+                return RootCoreValue.of(requiredTyped(in, "v", Float.class));
             case DOUBLE:
-                requireKey(in, "v");
-                return RootCoreValue.of(in.getDouble("v"));
+                return RootCoreValue.of(requiredTyped(in, "v", Double.class));
             case STRING:
                 return RootCoreValue.of(requiredString(in, "v"));
             case BYTE_ARRAY: {
@@ -327,6 +320,19 @@ public final class RootCoreCodec {
         Object value = bundle.get(key);
         if (!(value instanceof String)) throw new IllegalArgumentException("Invalid string: " + key);
         return checkedString((String) value);
+    }
+
+    private static <T> T requiredTyped(
+            Bundle bundle, String key, Class<T> expected
+    ) {
+        if (!bundle.containsKey(key)) {
+            throw new IllegalArgumentException("Missing value: " + key);
+        }
+        Object value = bundle.get(key);
+        if (value == null || value.getClass() != expected) {
+            throw new IllegalArgumentException("Invalid scalar type: " + key);
+        }
+        return expected.cast(value);
     }
 
     private static void requireKey(Bundle bundle, String key) {

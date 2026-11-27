@@ -91,10 +91,10 @@ public final class RootServerMain {
                     Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY,
                     user
             );
-        } catch (Throwable ignored) {
-            return systemContext.createPackageContext(
-                    packageName,
-                    Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY
+        } catch (Throwable error) {
+            throw new IllegalStateException(
+                    "Cannot create package context for Android user " + userId,
+                    error
             );
         }
     }

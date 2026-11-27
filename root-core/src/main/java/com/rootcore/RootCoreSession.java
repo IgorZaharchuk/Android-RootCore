@@ -140,18 +140,13 @@ public final class RootCoreSession implements AutoCloseable {
 
                 if (Build.VERSION.SDK_INT >= 34) {
                     int senderUid = getSentFromUid();
-                    if (senderUid != 0 && senderUid != Process.INVALID_UID) {
+                    if (senderUid != 0) {
                         android.util.Log.w(
                                 "RootCore",
-                                "Ignoring Binder broadcast from UID " + senderUid
+                                "Ignoring Binder broadcast: expected root UID 0, got "
+                                        + senderUid
                         );
                         return;
-                    }
-                    if (senderUid == Process.INVALID_UID) {
-                        android.util.Log.w(
-                                "RootCore",
-                                "Sender UID unavailable; verifying Binder identity"
-                        );
                     }
                 }
 
@@ -248,7 +243,7 @@ public final class RootCoreSession implements AutoCloseable {
             }
             String command =
                     "CLASSPATH=" + shellQuote(jar.getAbsolutePath()) +
-                    " app_process /system/bin " +
+                    " exec app_process /system/bin " +
                     "com.rootcore.bootstrap.RootServerMain " +
                     shellQuote(packageName) + " " +
                     uid + " " + userId + " " +
@@ -305,7 +300,7 @@ public final class RootCoreSession implements AutoCloseable {
 
     private static final int BINDER_EXECUTOR_THREADS = 4;
     private static final int BINDER_EXECUTOR_QUEUE_CAPACITY = 64;
-    private static final long BINDER_CALL_TIMEOUT_MS = 10_000L;
+    private static final long BINDER_CALL_TIMEOUT_MS = 25_000L;
 
     public RootCoreResponse execute(RootCoreRequest request)
             throws RemoteException {
@@ -491,6 +486,28 @@ public final class RootCoreSession implements AutoCloseable {
         } catch (Throwable ignored) {
         }
         receiverThread.quitSafely();
+
+        Thread processReaper = new Thread(() -> {
+            try {
+                if (!rootProcess.waitFor(12, TimeUnit.SECONDS)) {
+                    android.util.Log.w(
+                            "RootCore",
+                            "Root process did not exit after session close; forcing termination"
+                    );
+                    rootProcess.destroyForcibly();
+                    if (!rootProcess.waitFor(2, TimeUnit.SECONDS)) {
+                        android.util.Log.e(
+                                "RootCore",
+                                "Root process is still alive after forced termination"
+                        );
+                    }
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+        }, "RootCoreProcessReaper-" + sessionId.substring(0, 8));
+        processReaper.setDaemon(true);
+        processReaper.start();
     }
 
     public boolean awaitTermination(long timeoutMs) throws InterruptedException {

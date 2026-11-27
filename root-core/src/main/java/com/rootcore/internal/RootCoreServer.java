@@ -1,8 +1,10 @@
 package com.rootcore.internal;
 
+import android.app.BroadcastOptions;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -32,7 +34,6 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
     private static final String TAG = "RootCore";
     private static final long IDLE_TIMEOUT_MS = 15_000L;
     private static final long RELEASE_CLOSE_TIMEOUT_MS = 8_000L;
-    private static final long SHUTDOWN_GRACE_PERIOD_MS = 2_000L;
 
     private final Context context;
     private final int clientUid;
@@ -82,10 +83,19 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         binderBundle.putBinder("binder", asBinder());
         intent.putExtra("extra.bundle", binderBundle);
 
-        context.sendBroadcastAsUser(
-                intent,
-                UserHandle.getUserHandleForUid(clientUid)
-        );
+        UserHandle targetUser = UserHandle.getUserHandleForUid(clientUid);
+        if (Build.VERSION.SDK_INT >= 34) {
+            BroadcastOptions options = BroadcastOptions.makeBasic();
+            options.setShareIdentityEnabled(true);
+            context.sendBroadcastAsUser(
+                    intent,
+                    targetUser,
+                    null,
+                    options.toBundle()
+            );
+        } else {
+            context.sendBroadcastAsUser(intent, targetUser);
+        }
 
         android.util.Log.i(TAG, "Binder broadcast sent; root UID=" + Process.myUid());
     }
@@ -209,11 +219,6 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
             case "SET_FIELD":
             case "GET_STATIC_FIELD":
             case "SET_STATIC_FIELD":
-                if (!policy.allowsClientCodeExecution()) {
-                    throw new SecurityException(
-                            "Client code execution denied by RootCorePolicy"
-                    );
-                }
                 if (Process.myUid() != 0) {
                     throw new SecurityException(
                             "Client code execution requires UID 0"
@@ -557,6 +562,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         Object[] values = objectArray(args.get("arguments"), parameterTypes, leases);
 
         Method method = findMethod(entry.type(), methodName, parameterTypes);
+        requireClientClassOrigin(method.getDeclaringClass());
         if (method.getDeclaringClass() == Object.class) {
             throw new SecurityException("Object base methods are not callable");
         }
@@ -613,6 +619,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
     try {
         String name = stringArg(args, "fieldName");
         java.lang.reflect.Field field = findField(entry.type(), name);
+        requireClientClassOrigin(field.getDeclaringClass());
 
         if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
             throw new IllegalArgumentException("Use GET_STATIC_FIELD for static fields");
@@ -636,6 +643,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
     try {
         String name = stringArg(args, "fieldName");
         java.lang.reflect.Field field = findField(entry.type(), name);
+        requireClientClassOrigin(field.getDeclaringClass());
 
         if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
             throw new IllegalArgumentException("Use SET_STATIC_FIELD for static fields");
@@ -664,6 +672,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
         java.lang.reflect.Field field =
                 findField(type, stringArg(args, "fieldName"));
+        requireClientClassOrigin(field.getDeclaringClass());
         if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
             throw new IllegalArgumentException("Field is not static");
         }
@@ -681,6 +690,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
 
             java.lang.reflect.Field field =
                     findField(type, stringArg(args, "fieldName"));
+            requireClientClassOrigin(field.getDeclaringClass());
             if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
                 throw new IllegalArgumentException("Field is not static");
             }
@@ -758,10 +768,23 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         return value.asString();
     }
 
+    private static final int MAX_TYPE_ARRAY_DEPTH = 16;
+    private static final int MAX_TYPE_NAME_LENGTH = 512;
+
     private Class<?> loadClientType(String name) throws ClassNotFoundException {
-        if (name == null || name.trim().isEmpty()) {
-            throw new IllegalArgumentException("Class name is empty");
+        return loadClientType(name, 0);
+    }
+
+    private Class<?> loadClientType(String name, int depth)
+            throws ClassNotFoundException {
+        if (name == null || name.trim().isEmpty()
+                || name.length() > MAX_TYPE_NAME_LENGTH) {
+            throw new IllegalArgumentException("Class name is empty or too long");
         }
+        if (depth > MAX_TYPE_ARRAY_DEPTH) {
+            throw new IllegalArgumentException("Array type nesting is too deep");
+        }
+
         switch (name) {
             case "boolean": return boolean.class;
             case "byte": return byte.class;
@@ -773,7 +796,10 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
             case "char": return char.class;
             default:
                 if (name.endsWith("[]")) {
-                    Class<?> component = loadClientType(name.substring(0, name.length() - 2));
+                    Class<?> component = loadClientType(
+                            name.substring(0, name.length() - 2),
+                            depth + 1
+                    );
                     return java.lang.reflect.Array.newInstance(component, 0).getClass();
                 }
                 return context.getClassLoader().loadClass(name);
@@ -891,8 +917,21 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                 return array;
             }
 
-            if (java.util.Collection.class.isAssignableFrom(target)
-                    || target == Object.class) {
+            if (java.util.Set.class.isAssignableFrom(target)) {
+                if (!target.isAssignableFrom(java.util.LinkedHashSet.class)) {
+                    throw new UnsupportedOperationException(
+                            "Set target cannot accept LinkedHashSet: " + target
+                    );
+                }
+                java.util.LinkedHashSet<Object> set = new java.util.LinkedHashSet<>();
+                for (com.rootcore.RootCoreValue item : items) {
+                    set.add(fromRootValue(item, Object.class, leases));
+                }
+                return set;
+            }
+
+            if (target == Object.class
+                    || target.isAssignableFrom(ArrayList.class)) {
                 ArrayList<Object> list = new ArrayList<>();
                 for (com.rootcore.RootCoreValue item : items) {
                     list.add(fromRootValue(item, Object.class, leases));
@@ -900,7 +939,9 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                 return list;
             }
 
-            throw new UnsupportedOperationException("Sequence cannot be converted to " + target);
+            throw new UnsupportedOperationException(
+                    "Sequence cannot be converted to " + target
+            );
         }
         case MAP:
         case STRUCT: {
@@ -988,7 +1029,6 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
             return com.rootcore.RootCoreValue.map(fields);
         }
 
-        requireClientClassOrigin(value.getClass());
         String id = UUID.randomUUID().toString();
         ObjectEntry entry = new ObjectEntry(value);
         if (!objects.register(id, entry)) {
@@ -1422,6 +1462,8 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         handler.removeCallbacks(idleShutdown);
 
         List<ObjectEntry> remainingObjects = objects.detachAll();
+
+        // Start all object close operations before waiting for any of them.
         for (ObjectEntry entry : remainingObjects) {
             entry.requestClose();
         }
@@ -1441,9 +1483,71 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                 "Root Core session closing; detached objects="
                         + remainingObjects.size());
 
-        handler.postDelayed(
-                () -> System.exit(0),
-                SHUTDOWN_GRACE_PERIOD_MS
-        );
+        // Never block the main Looper while client operations or object
+        // cleanup may need it. All waiting happens on a dedicated worker.
+        Thread shutdownWorker = new Thread(() -> {
+            // One shared deadline prevents 256 objects from each consuming
+            // a separate RELEASE_CLOSE_TIMEOUT_MS interval.
+            long deadline = System.nanoTime()
+                    + RELEASE_CLOSE_TIMEOUT_MS * 1_000_000L;
+
+            while (activeOperations.get() > 0) {
+                long remainingNanos = deadline - System.nanoTime();
+                if (remainingNanos <= 0L) {
+                    android.util.Log.w(
+                            TAG,
+                            "Shutdown deadline reached with active operations="
+                                    + activeOperations.get()
+                    );
+                    break;
+                }
+
+                try {
+                    long sleepMs = Math.max(
+                            1L,
+                            Math.min(25L, remainingNanos / 1_000_000L)
+                    );
+                    Thread.sleep(sleepMs);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    android.util.Log.w(
+                            TAG,
+                            "Interrupted while waiting for active operations"
+                    );
+                    break;
+                }
+            }
+
+            for (ObjectEntry entry : remainingObjects) {
+                long remainingNanos = deadline - System.nanoTime();
+                if (remainingNanos <= 0L) {
+                    android.util.Log.w(
+                            TAG,
+                            "Shutdown deadline reached while closing objects"
+                    );
+                    break;
+                }
+
+                long remainingMs = Math.max(1L, remainingNanos / 1_000_000L);
+                Throwable closeError = entry.closeAndWait(remainingMs);
+                if (closeError != null) {
+                    android.util.Log.w(
+                            TAG,
+                            "Object close did not finish cleanly: "
+                                    + closeError.getClass().getSimpleName()
+                                    + ": " + closeError.getMessage()
+                    );
+                }
+            }
+
+            android.util.Log.i(
+                    TAG,
+                    "Root Core shutdown complete; exiting root process"
+            );
+            System.exit(0);
+        }, "RootCoreShutdown");
+
+        shutdownWorker.setDaemon(false);
+        shutdownWorker.start();
     }
 }

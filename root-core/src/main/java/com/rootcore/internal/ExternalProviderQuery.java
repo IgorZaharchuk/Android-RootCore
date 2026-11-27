@@ -376,8 +376,10 @@ final class ExternalProviderQuery {
 
     private static final int MAX_RESULT_COLUMNS = 64;
     private static final int MAX_RESULT_ROWS = 1000;
-    private static final int MAX_RESULT_CELLS = 10_000;
-    private static final long MAX_RESULT_BYTES = 256L * 1024L;
+    // Protocol v1 counts every column, row and cell as a value.
+    // Keep this below MAX_TOTAL_VALUES=4096, leaving room for containers.
+    private static final int MAX_RESULT_CELLS = 2_800;
+    private static final long MAX_RESULT_BYTES = 192L * 1024L;
 
     private static void validateProjection(String[] projection) {
         if (projection == null) return;

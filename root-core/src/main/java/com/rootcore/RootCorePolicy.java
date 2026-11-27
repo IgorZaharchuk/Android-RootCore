@@ -48,14 +48,12 @@ public final class RootCorePolicy {
 
     private final Set<String> providerAuthorities;
     private final Map<String, ActivityRule> activityRules;
-    private final boolean executeClientCode;
     private final Set<String> allowedOperations;
     private final Set<String> allowedExtensions;
 
     private RootCorePolicy(
             Set<String> providerAuthorities,
             Map<String, ActivityRule> activityRules,
-            boolean executeClientCode,
             Set<String> allowedOperations,
             Set<String> allowedExtensions
     ) {
@@ -65,7 +63,6 @@ public final class RootCorePolicy {
         this.activityRules = Collections.unmodifiableMap(
                 new LinkedHashMap<>(activityRules)
         );
-        this.executeClientCode = executeClientCode;
         this.allowedOperations = Collections.unmodifiableSet(
                 new LinkedHashSet<>(allowedOperations)
         );
@@ -80,10 +77,6 @@ public final class RootCorePolicy {
 
     public static RootCorePolicy denyAll() {
         return builder().build();
-    }
-
-    public boolean allowsClientCodeExecution() {
-        return executeClientCode;
     }
 
     public boolean allowsOperation(String operation) {
@@ -200,7 +193,6 @@ public final class RootCorePolicy {
 
             json.put("providers", providers);
             json.put("activities", activities);
-            json.put("executeClientCode", executeClientCode);
             json.put("operations", operations);
             json.put("extensions", extensions);
 
@@ -231,10 +223,6 @@ public final class RootCorePolicy {
             JSONArray activities = json.getJSONArray("activities");
 
             Builder builder = builder();
-            if (json.optBoolean("executeClientCode", false)) {
-                builder.allowClientCodeExecution();
-            }
-
             // Older policy payloads have no operation/extension grants.
             // Missing fields therefore preserve deny-by-default behavior.
             JSONArray operations = json.optJSONArray("operations");
@@ -311,7 +299,6 @@ public final class RootCorePolicy {
         private final Set<String> providers = new LinkedHashSet<>();
         private final Map<String, ActivityRule> activities =
                 new LinkedHashMap<>();
-        private boolean executeClientCode;
         private final Set<String> operations = new LinkedHashSet<>();
         private final Set<String> extensions = new LinkedHashSet<>();
 
@@ -379,11 +366,6 @@ public final class RootCorePolicy {
             return allowExtension("INTENT", 1);
         }
 
-        public Builder allowClientCodeExecution() {
-            this.executeClientCode = true;
-            return this;
-        }
-
         public Builder allowProviderAuthority(String authority) {
             if (authority == null || authority.trim().isEmpty()
                     || authority.contains("/")
@@ -443,8 +425,7 @@ public final class RootCorePolicy {
 
         public RootCorePolicy build() {
             return new RootCorePolicy(
-                    providers, activities, executeClientCode,
-                    operations, extensions
+                    providers, activities, operations, extensions
             );
         }
     }
