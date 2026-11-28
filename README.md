@@ -1,63 +1,178 @@
-# Android RootCore
+# Android-RootCore
 
-Standalone Android library for controlled root operations.
+**Android-RootCore** is a typed root execution bridge for Android applications.
 
-## Project structure
+It provides a controlled Binder-based communication channel between an Android
+client application and a separate process running with root privileges.
 
-- `root-core` — Android library containing the RootCore API and implementation.
-- `root-core-bootstrap` — bootstrap application module. Its DEX files are packaged into `root-core` as `assets/main.jar` during the build.
+RootCore is designed as a passive executor: the client decides when to perform
+an operation and supplies the policy that authorizes the requested capabilities.
 
-The AIDL interface is included directly in `root-core`. No separate shared module is required.
+## Project status
 
-## Build
+- Version: `0.9.1`
+- Minimum target platform: Android 10 (API 29)
+- Language of the public API: Java
+- IPC: Android Binder
+- Native code: not required
 
-The project uses:
+This is a pre-1.0 release. API and protocol details may evolve.
 
-- JDK 17
-- Gradle 8.11.1
-- Android Gradle Plugin 8.9.2
-- Android SDK 35
-- Minimum Android SDK 29
+## Architecture
 
-Build the release AAR:
+RootCore separates the application that requests an operation from the
+privileged process that executes it.
 
-    ./gradlew :root-core:assembleRelease
+The client:
 
-The resulting artifact is:
+1. Creates a `RootCorePolicy` describing permitted operations.
+2. Opens a `RootCoreSession`.
+3. Sends typed `RootCoreRequest` objects.
+4. Receives typed `RootCoreResponse` objects.
+5. Closes the session when it is no longer needed.
 
-    root-core/build/outputs/aar/root-core-release.aar
+RootCore does not independently decide what an application should do.
+It executes explicitly requested operations that pass the supplied policy.
 
-## Integration
+**Important security model:** the policy is an authorization mechanism for
+RootCore requests. It is not a sandbox for the client application. Code that
+the client deliberately executes with root privileges runs with UID 0.
 
-Copy `root-core-release.aar` into the consuming Android application's `libs` directory and add:
+## Protocol
 
-    dependencies {
-        implementation(files("libs/root-core-release.aar"))
+Protocol version 1 defines the following operations:
+
+| Operation | Purpose |
+|---|---|
+| `PING` | Check communication |
+| `QUERY_PROVIDER` | Read data from an authorized content provider |
+| `LAUNCH_ACTIVITY` | Launch an authorized activity |
+| `CREATE_OBJECT` | Create an object |
+| `INVOKE_METHOD` | Invoke an allowed method |
+| `RELEASE_OBJECT` | Release an object reference |
+| `GET_FIELD` | Read an instance field |
+| `SET_FIELD` | Write an instance field |
+| `GET_STATIC_FIELD` | Read a static field |
+| `SET_STATIC_FIELD` | Write a static field |
+
+Requests and responses use typed values rather than an unrestricted shell
+interface.
+
+`RootCoreValue` supports null and void values, scalar values, strings,
+byte arrays, collections, structured values, object references, and
+reserved extension values.
+
+The `EXTENSION` value type is reserved for protocol evolution. It is not
+a general-purpose extension mechanism in this release.
+
+## Policy
+
+A client supplies a `RootCorePolicy` when opening a session.
+
+The policy can authorize individual operation types, provider authorities,
+activities, and supported value extensions.
+
+The default policy is deny-all:
+
+    RootCorePolicy policy = RootCorePolicy.denyAll();
+
+A policy can be constructed with the builder:
+
+    RootCorePolicy policy = new RootCorePolicy.Builder()
+        .allowQueryProvider()
+        .allowProviderAuthority("com.example.provider")
+        .build();
+
+Only grant capabilities that the client actually needs.
+
+Different parts of an application can use different policies and sessions.
+A single broad permission set is not required.
+
+## Opening a session
+
+`RootCore.open()` must not be called from the Android main thread.
+
+The timeout must be at least 1000 milliseconds.
+
+    RootCorePolicy policy = new RootCorePolicy.Builder()
+        .allowOperation("PING")
+        .build();
+
+    RootCoreSession session =
+        RootCore.open(context, policy, 5000L);
+
+    try {
+        // Send RootCoreRequest objects through session.execute().
+    } finally {
+        session.close();
     }
 
-The AAR contains the RootCore classes, generated AIDL interface and bootstrap DEX asset.
+The example illustrates session creation and lifecycle. Construct requests
+according to the public request API available in the library.
 
-## Continuous integration
+## Session API
 
-GitHub Actions builds the release AAR on pushes to `main` and on manual workflow dispatch. The AAR is uploaded as a workflow artifact.
+The public session API includes:
 
+- `execute(RootCoreRequest)` — execute a typed request.
+- `close()` — close the session.
+- `awaitTermination(long)` — wait for process termination.
+- `isRootProcessAlive()` — check whether the root process is alive.
+- `isConnected()` — check session connectivity.
+- `getSessionId()` — obtain the session identifier.
 
-## Session lifecycle and security
+A session should be closed when it is no longer needed.
 
-- Supported Android versions: API 29 and newer.
-- The session timeout includes waiting for root-manager authorization,
-  bootstrap startup and Binder connection. The first root invocation may
-  require a user confirmation in the installed root manager.
-- The Binder peer is authenticated through a reverse callback on all
-  supported API levels. On API 34 and newer, broadcast sender UID is also
-  checked before accepting the Binder.
-- Session ID and policy payload are passed to the root bootstrap through a
-  short-lived file in the application's private files directory, not as
-  `su` command-line arguments. The bootstrap deletes that file after reading.
-- A Binder timeout is terminal for that session. RootCore closes the session,
-  requests server shutdown and starts bounded root-process reaping.
-- Provider projections accept plain column identifiers (optionally qualified
-  by one table prefix) or `*`; SQL expressions and duplicate columns are
-  rejected.
-- CI runs protocol unit tests and builds a minified consumer application to
-  verify the published consumer R8 rules.
+## Security characteristics
+
+RootCore includes the following safeguards:
+
+- Deny-all policy by default.
+- Per-operation authorization.
+- Provider authority restrictions.
+- Activity restrictions.
+- Typed request and response values.
+- Constrained object reflection.
+- Binder-based client authentication with a reverse callback.
+- Additional broadcast sender UID verification on Android 14 (API 34) and newer.
+- Bounded timeouts and session lifecycle management.
+- Private short-lived configuration transfer rather than passing session
+  configuration through process command-line arguments.
+- Provider projection validation.
+
+Object reflection is constrained to classes available through the client
+ClassLoader and to the relevant declaring-class origin.
+
+These mechanisms restrict RootCore's own request interface. They do not make
+arbitrary code running as UID 0 safe.
+
+## Deliberate limitations
+
+RootCore does not expose a general-purpose command execution interface.
+
+The library does not provide built-in arbitrary:
+
+- Shell commands or scripts.
+- `exec` operations.
+- System settings modification.
+- System property modification.
+- Service management.
+- Broadcast sending.
+- Shizuku or ADB fallback execution.
+
+Applications should use explicit typed operations and narrowly scoped policies.
+
+## Root environment
+
+RootCore is intended to work with Android root environments that can start
+a process with root privileges.
+
+Compatibility with individual root managers and Android releases depends on
+their behavior and must be verified on actual devices. The API 29+ target
+does not imply that every Android version, device, or root manager has been
+exhaustively tested.
+
+## License
+
+Android-RootCore is distributed under the Apache License, Version 2.0.
+See [LICENSE](LICENSE).
