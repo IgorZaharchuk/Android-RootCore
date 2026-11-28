@@ -104,8 +104,7 @@ jobs:
           AAR="root-core/build/outputs/aar/root-core-release.aar"
 
           mapfile -t APK_CANDIDATES < <(
-            find root-core-r8-test/build \\
-              \( -type f -o -type l \) -name '*.apk' -print 2>/dev/null | sort
+            find root-core-r8-test/build \( -type f -o -type l \) -name '*.apk' -print 2>/dev/null | sort
           )
 
           APK=""
@@ -119,8 +118,7 @@ jobs:
           if [ -z "$APK" ]; then
             echo "ERROR: no non-empty APK found under root-core-r8-test/build"
             echo "Build output files:"
-            find root-core-r8-test/build -maxdepth 8 -type f \\
-              -printf '%p (%s bytes)\\n' 2>/dev/null | sort | tail -100 || true
+            find root-core-r8-test/build -maxdepth 8 -type f -printf '%p (%s bytes)\n' 2>/dev/null | sort | tail -100 || true
             exit 1
           fi
 
