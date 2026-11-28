@@ -52,15 +52,13 @@ public final class RootObject<T> implements AutoCloseable {
     }
 
     RootCoreValue referenceValue() {
-        if (closed.get()) {
-            throw new IllegalStateException("RootObject is closed");
-        }
+        ensureOpen();
         return RootCoreValue.objectRef(objectId, sessionId, typeName);
     }
 
     private void ensureOpen() {
-        if (closed.get()) {
-            throw new IllegalStateException("RootObject is closed");
+        if (isClosed()) {
+            throw new IllegalStateException("RootObject or its session is closed");
         }
     }
 
@@ -69,7 +67,7 @@ public final class RootObject<T> implements AutoCloseable {
     }
 
     public boolean isClosed() {
-        return closed.get();
+        return closed.get() || !session.isOpen();
     }
 
     /** Invokes a method and decodes its result into Java values/remote handles. */
@@ -91,7 +89,9 @@ public final class RootObject<T> implements AutoCloseable {
                 referenceValue(), methodName,
                 arguments == null ? RootCoreArguments.empty() : arguments
         );
-        Object decoded = session.decodeApiValue(result);
+        Object decoded = normalizeCharacter(
+                session.decodeApiValue(result), returnType
+        );
         if (decoded == null) return null;
         if (returnType == Object.class) return (R) decoded;
         if (!box(returnType).isInstance(decoded)) {
@@ -117,6 +117,10 @@ public final class RootObject<T> implements AutoCloseable {
                 referenceValue(), methodName,
                 arguments == null ? RootCoreArguments.empty() : arguments
         );
+        if (result.getKind() == RootCoreValue.Kind.NULL
+                || result.getKind() == RootCoreValue.Kind.VOID) {
+            return null;
+        }
         if (result.getKind() != RootCoreValue.Kind.OBJECT_REF) {
             throw new IllegalStateException(
                     "Method did not return a remote object: " + methodName
@@ -137,8 +141,11 @@ public final class RootObject<T> implements AutoCloseable {
             throw new IllegalArgumentException("Field type is null");
         }
 
-        Object decoded = session.decodeApiValue(
-                session.getObjectField(referenceValue(), fieldName)
+        Object decoded = normalizeCharacter(
+                session.decodeApiValue(
+                        session.getObjectField(referenceValue(), fieldName)
+                ),
+                fieldType
         );
         if (decoded == null) return null;
         if (fieldType == Object.class) return (R) decoded;
@@ -156,6 +163,10 @@ public final class RootObject<T> implements AutoCloseable {
         ensureOpen();
         RootCoreValue result =
                 session.getObjectField(referenceValue(), fieldName);
+        if (result.getKind() == RootCoreValue.Kind.NULL
+                || result.getKind() == RootCoreValue.Kind.VOID) {
+            return null;
+        }
         if (result.getKind() != RootCoreValue.Kind.OBJECT_REF) {
             throw new IllegalStateException(
                     "Field is not a remote object: " + fieldName
@@ -178,6 +189,19 @@ public final class RootObject<T> implements AutoCloseable {
                     RootCoreValue.objectRef(objectId, sessionId, typeName)
             );
         }
+    }
+
+    private static Object normalizeCharacter(
+            Object value, Class<?> expectedType
+    ) {
+        if ((expectedType == char.class || expectedType == Character.class)
+                && value instanceof String) {
+            String text = (String) value;
+            if (text.length() == 1) {
+                return text.charAt(0);
+            }
+        }
+        return value;
     }
 
     private static Class<?> box(Class<?> type) {

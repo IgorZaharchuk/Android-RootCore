@@ -732,6 +732,10 @@ public final class RootCoreSession implements AutoCloseable {
                 && rootProcess.isAlive();
     }
 
+    boolean isOpen() {
+        return !closed;
+    }
+
     public String getSessionId() {
         return sessionId;
     }
