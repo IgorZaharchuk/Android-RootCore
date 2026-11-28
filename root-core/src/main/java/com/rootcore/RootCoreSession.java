@@ -510,7 +510,13 @@ public final class RootCoreSession implements AutoCloseable {
     }
 
     Object decodeApiValue(RootCoreValue value) {
+        return decodeApiValue(value, Object.class);
+    }
+
+    Object decodeApiValue(RootCoreValue value, Class<?> expectedType) {
         if (value == null) return null;
+        Class<?> target = expectedType == null ? Object.class : expectedType;
+
         switch (value.getKind()) {
             case NULL:
             case VOID:
@@ -522,15 +528,45 @@ public final class RootCoreSession implements AutoCloseable {
             case LONG: return value.asLong();
             case FLOAT: return value.asFloat();
             case DOUBLE: return value.asDouble();
-            case STRING: return value.asString();
-            case BYTE_ARRAY: return value.asByteArray();
+            case STRING: {
+                String text = value.asString();
+                if (target == char.class || target == Character.class) {
+                    if (text.length() != 1) {
+                        throw new IllegalArgumentException("Expected one character");
+                    }
+                    return text.charAt(0);
+                }
+                return text;
+            }
+            case BYTE_ARRAY:
+                return value.asByteArray();
             case OBJECT_REF:
                 return new RootObject<>(this, value);
-            case ARRAY:
+            case ARRAY: {
+                List<RootCoreValue> items = value.asSequence();
+
+                if (target.isArray()) {
+                    Class<?> componentType = target.getComponentType();
+                    Object array = java.lang.reflect.Array.newInstance(
+                            componentType, items.size()
+                    );
+                    for (int i = 0; i < items.size(); i++) {
+                        Object item = decodeApiValue(items.get(i), componentType);
+                        java.lang.reflect.Array.set(array, i, item);
+                    }
+                    return array;
+                }
+
+                List<Object> result = new ArrayList<>();
+                for (RootCoreValue item : items) {
+                    result.add(decodeApiValue(item, Object.class));
+                }
+                return result;
+            }
             case LIST: {
                 List<Object> result = new ArrayList<>();
                 for (RootCoreValue item : value.asSequence()) {
-                    result.add(decodeApiValue(item));
+                    result.add(decodeApiValue(item, Object.class));
                 }
                 return result;
             }
@@ -539,7 +575,10 @@ public final class RootCoreSession implements AutoCloseable {
                 Map<String, Object> result = new LinkedHashMap<>();
                 for (Map.Entry<String, RootCoreValue> entry
                         : value.asFields().entrySet()) {
-                    result.put(entry.getKey(), decodeApiValue(entry.getValue()));
+                    result.put(
+                            entry.getKey(),
+                            decodeApiValue(entry.getValue(), Object.class)
+                    );
                 }
                 return result;
             }
@@ -551,12 +590,6 @@ public final class RootCoreSession implements AutoCloseable {
                 );
         }
     }
-
-
-
-
-
-
 
 
 

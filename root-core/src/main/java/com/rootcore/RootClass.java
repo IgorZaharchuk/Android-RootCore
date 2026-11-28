@@ -45,7 +45,8 @@ public final class RootClass<T> {
 
         Object value = normalizeCharacter(
                 session.decodeApiValue(
-                        session.getStaticField(className, fieldName)
+                        session.getStaticField(className, fieldName),
+                        fieldType
                 ),
                 fieldType
         );
@@ -117,7 +118,7 @@ public final class RootClass<T> {
         );
 
         Object decoded = normalizeCharacter(
-                session.decodeApiValue(result), returnType
+                session.decodeApiValue(result, returnType), returnType
         );
         if (decoded == null) return null;
         if (returnType == Object.class) return (R) decoded;

@@ -1284,6 +1284,8 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
             Class<?> type, String name, Class<?>[] parameterTypes
     ) throws NoSuchMethodException {
         Class<?> current = type;
+
+        // Class declarations always take precedence over interface defaults.
         while (current != null) {
             try {
                 return current.getDeclaredMethod(name, parameterTypes);
@@ -1291,7 +1293,76 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                 current = current.getSuperclass();
             }
         }
+
+        Method interfaceMethod = findInterfaceMethod(
+                type, name, parameterTypes
+        );
+        if (interfaceMethod != null) {
+            return interfaceMethod;
+        }
+
         throw new NoSuchMethodException(type.getName() + "." + name);
+    }
+
+    private static Method findInterfaceMethod(
+            Class<?> type, String name, Class<?>[] parameterTypes
+    ) {
+        Method best = null;
+
+        for (Class<?> current = type;
+             current != null;
+             current = current.getSuperclass()) {
+            for (Class<?> iface : current.getInterfaces()) {
+                Method candidate = findInterfaceMethodRecursive(
+                        iface, name, parameterTypes
+                );
+                best = moreSpecificInterfaceMethod(best, candidate);
+            }
+        }
+
+        return best;
+    }
+
+    private static Method findInterfaceMethodRecursive(
+            Class<?> iface, String name, Class<?>[] parameterTypes
+    ) {
+        Method best = null;
+
+        try {
+            Method declared = iface.getDeclaredMethod(name, parameterTypes);
+            int modifiers = declared.getModifiers();
+
+            // Static and private interface methods are not inherited.
+            if (java.lang.reflect.Modifier.isPublic(modifiers)
+                    && !java.lang.reflect.Modifier.isStatic(modifiers)) {
+                best = declared;
+            }
+        } catch (NoSuchMethodException ignored) {
+        }
+
+        for (Class<?> parent : iface.getInterfaces()) {
+            Method candidate = findInterfaceMethodRecursive(
+                    parent, name, parameterTypes
+            );
+            best = moreSpecificInterfaceMethod(best, candidate);
+        }
+
+        return best;
+    }
+
+    private static Method moreSpecificInterfaceMethod(
+            Method current, Method candidate
+    ) {
+        if (candidate == null) return current;
+        if (current == null) return candidate;
+
+        Class<?> currentType = current.getDeclaringClass();
+        Class<?> candidateType = candidate.getDeclaringClass();
+
+        if (currentType.isAssignableFrom(candidateType)) {
+            return candidate;
+        }
+        return current;
     }
 
     private static java.lang.reflect.Field findField(Class<?> type, String name)

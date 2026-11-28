@@ -90,7 +90,7 @@ public final class RootObject<T> implements AutoCloseable {
                 arguments == null ? RootCoreArguments.empty() : arguments
         );
         Object decoded = normalizeCharacter(
-                session.decodeApiValue(result), returnType
+                session.decodeApiValue(result, returnType), returnType
         );
         if (decoded == null) return null;
         if (returnType == Object.class) return (R) decoded;
@@ -143,7 +143,8 @@ public final class RootObject<T> implements AutoCloseable {
 
         Object decoded = normalizeCharacter(
                 session.decodeApiValue(
-                        session.getObjectField(referenceValue(), fieldName)
+                        session.getObjectField(referenceValue(), fieldName),
+                        fieldType
                 ),
                 fieldType
         );
