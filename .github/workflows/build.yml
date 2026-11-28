@@ -48,8 +48,6 @@ jobs:
 
           out = Path(__import__("os").environ["RUNNER_TEMP"]) / "rootcore-r8-diagnostics"
           files = {
-              "root-core-r8-test/build/outputs/apk/release/root-core-r8-test-release.apk":
-                  "root-core-r8-test-release.apk",
               "root-core-r8-test/build/outputs/mapping/release/mapping.txt":
                   "mapping.txt",
               "root-core/build/outputs/aar/root-core-release.aar":
@@ -70,6 +68,28 @@ jobs:
               except Exception as e:
                   print(f"SKIPPED: {type(e).__name__}: {e}")
 
+          # APK location can vary between Android Gradle Plugin versions.
+          build_dir = Path("root-core-r8-test/build")
+          print("\nAPK and output metadata discovered:")
+          candidates = []
+          if build_dir.exists():
+              for item in build_dir.rglob("*"):
+                  if item.is_file() and (
+                      item.suffix.lower() == ".apk"
+                      or item.name == "output-metadata.json"
+                  ):
+                      print(f"{item} ({item.stat().st_size} bytes)")
+                      if item.suffix.lower() == ".apk" and item.stat().st_size:
+                          candidates.append(item)
+
+          for index, apk in enumerate(sorted(candidates), start=1):
+              target = out / f"r8-smoke-{index}-{apk.name}"
+              shutil.copy2(apk, target)
+              print(f"COPIED APK: {apk} -> {target.name}")
+
+          if not candidates:
+              print("WARNING: no APK found under root-core-r8-test/build")
+
           print("\nPrepared diagnostic directory:")
           for f in out.iterdir():
               print(f"{f.name}: {f.stat().st_size} bytes")
@@ -80,9 +100,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          APK="root-core-r8-test/build/outputs/apk/release/root-core-r8-test-release.apk"
           MAPPING="root-core-r8-test/build/outputs/mapping/release/mapping.txt"
           AAR="root-core/build/outputs/aar/root-core-release.aar"
+
+          mapfile -t APK_CANDIDATES < <(
+            find root-core-r8-test/build \\
+              \( -type f -o -type l \) -name '*.apk' -print 2>/dev/null | sort
+          )
+
+          APK=""
+          for candidate in "${APK_CANDIDATES[@]}"; do
+            if [ -s "$candidate" ]; then
+              APK="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: no non-empty APK found under root-core-r8-test/build"
+            echo "Build output files:"
+            find root-core-r8-test/build -maxdepth 8 -type f \\
+              -printf '%p (%s bytes)\\n' 2>/dev/null | sort | tail -100 || true
+            exit 1
+          fi
+
+          echo "Using APK: $APK"
           test -s "$APK"
 
           TMP="$(mktemp -d)"
