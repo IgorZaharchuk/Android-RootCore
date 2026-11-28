@@ -40,7 +40,32 @@ jobs:
 
           APK="root-core-r8-test/build/outputs/apk/release/root-core-r8-test-release.apk"
           MAPPING="root-core-r8-test/build/outputs/mapping/release/mapping.txt"
+          AAR="root-core/build/outputs/aar/root-core-release.aar"
           test -s "$APK"
+
+          DIAG_DIR="$RUNNER_TEMP/rootcore-r8-diagnostics"
+          mkdir -p "$DIAG_DIR"
+
+          echo "APK file information:"
+          ls -l "$APK"
+          echo "Resolved APK path:"
+          readlink -f "$APK" || true
+          file "$APK" || true
+
+          # Copy the actual file, dereferencing a possible symlink.
+          cp -L "$APK" "$DIAG_DIR/root-core-r8-test-release.apk"
+          test -s "$DIAG_DIR/root-core-r8-test-release.apk"
+
+          if [ -s "$MAPPING" ]; then
+            cp -L "$MAPPING" "$DIAG_DIR/mapping.txt"
+          fi
+
+          if [ -s "$AAR" ]; then
+            cp -L "$AAR" "$DIAG_DIR/root-core-release.aar"
+          fi
+
+          echo "Diagnostic files prepared:"
+          ls -lh "$DIAG_DIR"
 
           TMP="$(mktemp -d)"
           trap 'rm -rf "$TMP"' EXIT
@@ -107,10 +132,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: rootcore-r8-diagnostics
-          path: |
-            root-core-r8-test/build/outputs/apk/release/root-core-r8-test-release.apk
-            root-core-r8-test/build/outputs/mapping/release/mapping.txt
-          if-no-files-found: warn
+          path: ${{ runner.temp }}/rootcore-r8-diagnostics/
+          if-no-files-found: error
 
       - name: Upload AAR
         uses: actions/upload-artifact@v7
