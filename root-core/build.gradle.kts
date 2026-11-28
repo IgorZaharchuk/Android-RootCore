@@ -6,6 +6,8 @@ plugins {
     id("com.android.library")
 }
 
+version = "0.9.1"
+
 android {
     namespace = "com.rootcore"
     compileSdk = 35
