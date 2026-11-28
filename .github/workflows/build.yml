@@ -33,6 +33,48 @@ jobs:
             :root-core:assembleRelease \
             :root-core-r8-test:assembleRelease
 
+      - name: Prepare R8 diagnostic artifacts
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          OUT="$RUNNER_TEMP/rootcore-r8-diagnostics"
+          mkdir -p "$OUT"
+
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import shutil
+
+          out = Path(__import__("os").environ["RUNNER_TEMP"]) / "rootcore-r8-diagnostics"
+          files = {
+              "root-core-r8-test/build/outputs/apk/release/root-core-r8-test-release.apk":
+                  "root-core-r8-test-release.apk",
+              "root-core-r8-test/build/outputs/mapping/release/mapping.txt":
+                  "mapping.txt",
+              "root-core/build/outputs/aar/root-core-release.aar":
+                  "root-core-release.aar",
+          }
+
+          for source, target in files.items():
+              src = Path(source)
+              print(f"\nSOURCE: {src}")
+              print(f"exists={src.exists()} is_file={src.is_file()} symlink={src.is_symlink()}")
+              try:
+                  resolved = src.resolve(strict=True)
+                  print(f"resolved={resolved}")
+                  print(f"size={resolved.stat().st_size}")
+                  if resolved.is_file() and resolved.stat().st_size:
+                      shutil.copy2(resolved, out / target)
+                      print(f"COPIED: {target}")
+              except Exception as e:
+                  print(f"SKIPPED: {type(e).__name__}: {e}")
+
+          print("\nPrepared diagnostic directory:")
+          for f in out.iterdir():
+              print(f"{f.name}: {f.stat().st_size} bytes")
+          PYTHON
+
       - name: Verify minified RootCore bootstrap entry point
         shell: bash
         run: |
@@ -42,30 +84,6 @@ jobs:
           MAPPING="root-core-r8-test/build/outputs/mapping/release/mapping.txt"
           AAR="root-core/build/outputs/aar/root-core-release.aar"
           test -s "$APK"
-
-          DIAG_DIR="$RUNNER_TEMP/rootcore-r8-diagnostics"
-          mkdir -p "$DIAG_DIR"
-
-          echo "APK file information:"
-          ls -l "$APK"
-          echo "Resolved APK path:"
-          readlink -f "$APK" || true
-          file "$APK" || true
-
-          # Copy the actual file, dereferencing a possible symlink.
-          cp -L "$APK" "$DIAG_DIR/root-core-r8-test-release.apk"
-          test -s "$DIAG_DIR/root-core-r8-test-release.apk"
-
-          if [ -s "$MAPPING" ]; then
-            cp -L "$MAPPING" "$DIAG_DIR/mapping.txt"
-          fi
-
-          if [ -s "$AAR" ]; then
-            cp -L "$AAR" "$DIAG_DIR/root-core-release.aar"
-          fi
-
-          echo "Diagnostic files prepared:"
-          ls -lh "$DIAG_DIR"
 
           TMP="$(mktemp -d)"
           trap 'rm -rf "$TMP"' EXIT
@@ -133,7 +151,7 @@ jobs:
         with:
           name: rootcore-r8-diagnostics
           path: ${{ runner.temp }}/rootcore-r8-diagnostics/
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Upload AAR
         uses: actions/upload-artifact@v7
