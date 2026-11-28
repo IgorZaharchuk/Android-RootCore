@@ -41,6 +41,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.UUID;
+import java.util.Map;
+import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.ArrayList;
 
 public final class RootCoreSession implements AutoCloseable {
 
@@ -360,6 +364,145 @@ public final class RootCoreSession implements AutoCloseable {
     public int ping() throws RemoteException {
         return callRemote("ping", () -> remote.ping());
     }
+
+    /**
+     * Creates an instance of a client application class in the root process.
+     * The returned object is a remote handle, not a local Java instance.
+     */
+    public <T> RootObject<T> createObject(
+            Class<T> type,
+            RootCoreArguments arguments
+    ) throws RemoteException {
+        if (type == null) throw new IllegalArgumentException("Class is null");
+        RootCoreArguments actual = arguments == null
+                ? RootCoreArguments.empty() : arguments;
+
+        Map<String, RootCoreValue> args = new LinkedHashMap<>();
+        args.put("className", RootCoreValue.of(
+                RootCoreArguments.typeName(type)
+        ));
+        args.put("parameterTypes", RootCoreValue.array(
+                encodeTypeNames(actual.parameterTypes())
+        ));
+        args.put("arguments", RootCoreValue.array(
+                actual.encodedValues(sessionId)
+        ));
+
+        RootCoreValue result = executeApiOperation("CREATE_OBJECT", args);
+        return new RootObject<>(this, result);
+    }
+
+    public <T> RootObject<T> createObject(Class<T> type)
+            throws RemoteException {
+        return createObject(type, RootCoreArguments.empty());
+    }
+
+    private List<RootCoreValue> encodeTypeNames(List<Class<?>> types) {
+        List<RootCoreValue> result = new ArrayList<>();
+        for (Class<?> type : types) {
+            result.add(RootCoreValue.of(RootCoreArguments.typeName(type)));
+        }
+        return result;
+    }
+
+    RootCoreValue invokeObject(
+            RootCoreValue object,
+            String methodName,
+            RootCoreArguments arguments
+    ) throws RemoteException {
+        Map<String, RootCoreValue> args = new LinkedHashMap<>();
+        args.put("object", object);
+        args.put("methodName", RootCoreValue.of(methodName));
+        args.put("parameterTypes", RootCoreValue.array(
+                encodeTypeNames(arguments.parameterTypes())
+        ));
+        args.put("arguments", RootCoreValue.array(
+                arguments.encodedValues(sessionId)
+        ));
+        return executeApiOperation("INVOKE_METHOD", args);
+    }
+
+    RootCoreValue getObjectField(
+            RootCoreValue object, String fieldName
+    ) throws RemoteException {
+        Map<String, RootCoreValue> args = new LinkedHashMap<>();
+        args.put("object", object);
+        args.put("fieldName", RootCoreValue.of(fieldName));
+        return executeApiOperation("GET_FIELD", args);
+    }
+
+    void setObjectField(
+            RootCoreValue object, String fieldName, Object value
+    ) throws RemoteException {
+        Map<String, RootCoreValue> args = new LinkedHashMap<>();
+        args.put("object", object);
+        args.put("fieldName", RootCoreValue.of(fieldName));
+        args.put("value", RootCoreArguments.encode(value, sessionId));
+        executeApiOperation("SET_FIELD", args);
+    }
+
+    void releaseObject(RootCoreValue object) throws RemoteException {
+        Map<String, RootCoreValue> args = new LinkedHashMap<>();
+        args.put("object", object);
+        executeApiOperation("RELEASE_OBJECT", args);
+    }
+
+    private RootCoreValue executeApiOperation(
+            String operation, Map<String, RootCoreValue> arguments
+    ) throws RemoteException {
+        RootCoreRequest request = new RootCoreRequest(
+                UUID.randomUUID().toString(), operation, arguments
+        );
+        RootCoreResponse response = execute(request);
+        if (!response.isSuccess()) {
+            throw new RootCoreException(response.getError());
+        }
+        return response.getResult();
+    }
+
+    Object decodeApiValue(RootCoreValue value) {
+        if (value == null) return null;
+        switch (value.getKind()) {
+            case NULL:
+            case VOID:
+                return null;
+            case BOOLEAN: return value.asBoolean();
+            case BYTE: return value.asByte();
+            case SHORT: return value.asShort();
+            case INT: return value.asInt();
+            case LONG: return value.asLong();
+            case FLOAT: return value.asFloat();
+            case DOUBLE: return value.asDouble();
+            case STRING: return value.asString();
+            case BYTE_ARRAY: return value.asByteArray();
+            case OBJECT_REF:
+                return new RootObject<>(this, value);
+            case ARRAY:
+            case LIST: {
+                List<Object> result = new ArrayList<>();
+                for (RootCoreValue item : value.asSequence()) {
+                    result.add(decodeApiValue(item));
+                }
+                return result;
+            }
+            case MAP:
+            case STRUCT: {
+                Map<String, Object> result = new LinkedHashMap<>();
+                for (Map.Entry<String, RootCoreValue> entry
+                        : value.asFields().entrySet()) {
+                    result.put(entry.getKey(), decodeApiValue(entry.getValue()));
+                }
+                return result;
+            }
+            case EXTENSION:
+                return value;
+            default:
+                throw new IllegalArgumentException(
+                        "Unsupported RootCore result kind: " + value.getKind()
+                );
+        }
+    }
+
 
 
 
