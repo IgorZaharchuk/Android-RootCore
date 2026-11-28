@@ -39,6 +39,7 @@ jobs:
           set -euo pipefail
 
           APK="root-core-r8-test/build/outputs/apk/release/root-core-r8-test-release.apk"
+          MAPPING="root-core-r8-test/build/outputs/mapping/release/mapping.txt"
           test -s "$APK"
 
           TMP="$(mktemp -d)"
@@ -49,11 +50,67 @@ jobs:
           find "$TMP" -name 'classes*.dex' -type f -print0 \
             | xargs -0 -r strings > "$TMP/dex-strings.txt"
 
-          grep -Fq 'Lcom/rootcore/internal/RootCoreServer;' "$TMP/dex-strings.txt"
-          grep -Fxq '<init>' "$TMP/dex-strings.txt"
-          grep -Fxq 'start' "$TMP/dex-strings.txt"
+          echo "DEX files:"
+          find "$TMP" -name 'classes*.dex' -type f -print
 
-          echo "R8 verification passed: RootCoreServer, constructor and start() are present."
+          FAILED=0
+
+          check_match() {
+            LABEL="$1"
+            PATTERN="$2"
+            MODE="$3"
+
+            if [ "$MODE" = "exact" ]; then
+              MATCH="grep -Fxq"
+            else
+              MATCH="grep -Fq"
+            fi
+
+            if [ "$MODE" = "exact" ]; then
+              if grep -Fxq "$PATTERN" "$TMP/dex-strings.txt"; then
+                echo "PASS: $LABEL"
+              else
+                echo "FAIL: $LABEL"
+                FAILED=1
+              fi
+            else
+              if grep -Fq "$PATTERN" "$TMP/dex-strings.txt"; then
+                echo "PASS: $LABEL"
+              else
+                echo "FAIL: $LABEL"
+                FAILED=1
+              fi
+            fi
+          }
+
+          check_match "RootCoreServer class descriptor"             'Lcom/rootcore/internal/RootCoreServer;' contains
+          check_match "Constructor name" '<init>' exact
+          check_match "start method name" 'start' exact
+
+          if [ -f "$MAPPING" ]; then
+            echo "R8 mapping entries for RootCoreServer:"
+            grep -F 'com.rootcore.internal.RootCoreServer' "$MAPPING" || true
+          else
+            echo "WARNING: R8 mapping file not found: $MAPPING"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "R8 verification failed. Related DEX strings:"
+            grep -E 'RootCoreServer|rootcore/internal|<init>|start'               "$TMP/dex-strings.txt" | head -80 || true
+            exit 1
+          fi
+
+          echo "R8 verification passed."
+
+      - name: Upload R8 diagnostic artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rootcore-r8-diagnostics
+          path: |
+            root-core-r8-test/build/outputs/apk/release/root-core-r8-test-release.apk
+            root-core-r8-test/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: warn
 
       - name: Upload AAR
         uses: actions/upload-artifact@v7
