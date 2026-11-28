@@ -397,6 +397,19 @@ public final class RootCoreSession implements AutoCloseable {
         return createObject(type, RootCoreArguments.empty());
     }
 
+    /**
+     * Returns a remote class handle for static member access.
+     */
+    public <T> RootClass<T> getClass(Class<T> type) {
+        if (type == null) {
+            throw new IllegalArgumentException("Class is null");
+        }
+        if (!isOpen()) {
+            throw new IllegalStateException("RootCore session is closed");
+        }
+        return new RootClass<>(this, type);
+    }
+
     private List<RootCoreValue> encodeTypeNames(List<Class<?>> types) {
         List<RootCoreValue> result = new ArrayList<>();
         for (Class<?> type : types) {
@@ -445,6 +458,42 @@ public final class RootCoreSession implements AutoCloseable {
         Map<String, RootCoreValue> args = new LinkedHashMap<>();
         args.put("object", object);
         executeApiOperation("RELEASE_OBJECT", args);
+    }
+
+    RootCoreValue invokeStatic(
+            String className,
+            String methodName,
+            RootCoreArguments arguments
+    ) throws RemoteException {
+        Map<String, RootCoreValue> args = new LinkedHashMap<>();
+        args.put("className", RootCoreValue.of(className));
+        args.put("methodName", RootCoreValue.of(methodName));
+        args.put("parameterTypes", RootCoreValue.array(
+                encodeTypeNames(arguments.parameterTypes())
+        ));
+        args.put("arguments", RootCoreValue.array(
+                arguments.encodedValues(sessionId)
+        ));
+        return executeApiOperation("INVOKE_STATIC_METHOD", args);
+    }
+
+    RootCoreValue getStaticField(
+            String className, String fieldName
+    ) throws RemoteException {
+        Map<String, RootCoreValue> args = new LinkedHashMap<>();
+        args.put("className", RootCoreValue.of(className));
+        args.put("fieldName", RootCoreValue.of(fieldName));
+        return executeApiOperation("GET_STATIC_FIELD", args);
+    }
+
+    void setStaticField(
+            String className, String fieldName, Object value
+    ) throws RemoteException {
+        Map<String, RootCoreValue> args = new LinkedHashMap<>();
+        args.put("className", RootCoreValue.of(className));
+        args.put("fieldName", RootCoreValue.of(fieldName));
+        args.put("value", RootCoreArguments.encode(value, sessionId));
+        executeApiOperation("SET_STATIC_FIELD", args);
     }
 
     private RootCoreValue executeApiOperation(

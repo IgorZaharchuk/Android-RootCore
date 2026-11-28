@@ -253,6 +253,7 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         switch (operation) {
             case "CREATE_OBJECT":
             case "INVOKE_METHOD":
+            case "INVOKE_STATIC_METHOD":
             case "RELEASE_OBJECT":
             case "GET_FIELD":
             case "SET_FIELD":
@@ -318,6 +319,8 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
                 return typedCreate(args);
             case "INVOKE_METHOD":
                 return typedInvoke(args);
+            case "INVOKE_STATIC_METHOD":
+                return typedInvokeStatic(args);
             case "RELEASE_OBJECT":
                 return typedRelease(args);
             case "GET_FIELD":
@@ -743,6 +746,53 @@ public final class RootCoreServer extends IRootCoreManager.Stub {
         releaseLeases(leases);
     }
 }
+
+    private com.rootcore.RootCoreValue typedInvokeStatic(
+            Map<String, com.rootcore.RootCoreValue> args
+    ) throws Throwable {
+        List<ObjectEntry> leases = new ArrayList<>();
+        try {
+            Class<?> type = loadClientType(stringArg(args, "className"));
+            requireClientClassOrigin(type);
+
+            String methodName = stringArg(args, "methodName");
+            Class<?>[] parameterTypes =
+                    typeArray(args.get("parameterTypes"));
+            Object[] values = objectArray(
+                    args.get("arguments"), parameterTypes, leases
+            );
+
+            Method method = findMethod(type, methodName, parameterTypes);
+            requireClientClassOrigin(method.getDeclaringClass());
+
+            if (!java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
+                throw new IllegalArgumentException(
+                        "Method is not static: " + methodName
+                );
+            }
+
+            if (method.getDeclaringClass() == Object.class) {
+                throw new SecurityException(
+                        "Object base methods are not callable"
+                );
+            }
+
+            if (!method.isAccessible()) {
+                method.setAccessible(true);
+            }
+
+            Object result;
+            try {
+                result = method.invoke(null, values);
+            } catch (InvocationTargetException error) {
+                throw unwrap(error);
+            }
+
+            return toRootValue(result, method.getReturnType());
+        } finally {
+            releaseLeases(leases);
+        }
+    }
 
     private com.rootcore.RootCoreValue typedRelease(
         Map<String, com.rootcore.RootCoreValue> args

@@ -16,6 +16,7 @@ final class RootCoreDispatcher {
         switch (operation) {
             case "CREATE_OBJECT":
             case "INVOKE_METHOD":
+            case "INVOKE_STATIC_METHOD":
             case "RELEASE_OBJECT":
             case "GET_FIELD":
             case "SET_FIELD":

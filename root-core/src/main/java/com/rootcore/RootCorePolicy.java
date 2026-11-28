@@ -326,6 +326,10 @@ public final class RootCorePolicy {
             return allowOperation("INVOKE_METHOD");
         }
 
+        public Builder allowInvokeStaticMethod() {
+            return allowOperation("INVOKE_STATIC_METHOD");
+        }
+
         public Builder allowReleaseObject() {
             return allowOperation("RELEASE_OBJECT");
         }
